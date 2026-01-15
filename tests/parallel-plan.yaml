@@ -14,13 +14,13 @@ stories:
   checkpoint_folder: "tests/checkpoints"
 steps:
   - id: A
-    file: "instructions/P1.md"
+    file: "instructions/P1-ux-design.md"
     parallel_group: Group1
   - id: B
-    file: "instructions/P1.md"
+    file: "instructions/P1-ux-design.md"
     parallel_group: Group1
   - id: C
-    file: "instructions/P1.md"
+    file: "instructions/P1-ux-design.md"
     parallel_group: Group1
     depends_on: [A]
 fix_step:
