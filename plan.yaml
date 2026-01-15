@@ -147,3 +147,21 @@ fix_step:
   id: pFix
   file: "instructions/pFix.md"
   timeout_sec: 7200  # 2 hours for fixing complex issues
+
+# ============================================================================
+# LLM PROVIDER MAPPING (per-step)
+# ============================================================================
+# Configure which LLM provider to use for each step
+# Options: 'claude' (default), 'glm'
+# Priority: step.provider > providers[stepId] > 'claude'
+providers:
+  P1: claude    # UX Design
+  P2: glm       # Tests (RED)
+  P3a: glm      # Backend Services (Implementation)
+  P3b: glm      # Backend Routes (Implementation)
+  P3c: glm      # Frontend Components (Implementation)
+  P3d: glm      # Frontend Pages (Implementation)
+  P4: claude    # Refactor
+  P5: claude    # Code Review
+  P6: claude    # QA
+  P7: glm       # Documentation
