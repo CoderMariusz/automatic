@@ -1,0 +1,28 @@
+version: 1
+runner:
+  claude_cmd: ["claude"]
+  default_timeout_sec: 10
+checks:
+  enabled: false
+  bundles: {}
+autofix:
+  enabled: false
+  commands: []
+stories:
+  input_folder: "tests/stories"
+  processed_folder: "tests/processed"
+  checkpoint_folder: "tests/checkpoints"
+steps:
+  - id: A
+    file: "instructions/P1.md"
+    parallel_group: Group1
+  - id: B
+    file: "instructions/P1.md"
+    parallel_group: Group1
+  - id: C
+    file: "instructions/P1.md"
+    parallel_group: Group1
+    depends_on: [A]
+fix_step:
+  id: fix
+  file: "instructions/pFix.md"

@@ -1,0 +1,3 @@
+story_id: TEST-PARALLEL-1
+type: backend
+content: "This is a test story for parallel execution."

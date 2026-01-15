@@ -16,13 +16,81 @@
  *   --help          Pokaż pomoc
  */
 
-import { execSync } from 'child_process';
+import { execSync, exec } from 'child_process';
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, renameSync } from 'fs';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { resolve, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
+import { promisify } from 'util';
 
+const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
+
+// ... existing code ...
+
+// ============== CLAUDE ==============
+
+async function runClaudeAsync(prompt: string, timeoutSec: number, stepId: string): Promise<{ ok: boolean; output: string; error?: string }> {
+    if (DRY_RUN) {
+        log(`[DRY-RUN] [${stepId}] Would execute Claude with prompt`);
+        console.log('\x1b[90m' + prompt.slice(0, 200) + '...\x1b[0m');
+        return { ok: true, output: '[dry-run output]' };
+    }
+
+    if (MOCK_MODE) {
+        log(`[MOCK] [${stepId}] Simulating Claude (2s delay)...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        return { ok: true, output: '===NEXT_STEP_READY===\nMock successful.' };
+    }
+
+    const simpleId = new Date().toISOString().slice(11, 19).replace(/:/g, '');
+    const safeStepId = stepId.replace(/[^a-zA-Z0-9-]/g, '_');
+    const promptFile = resolve(__dirname, `.prompt.${safeStepId}.tmp`);
+    writeFileSync(promptFile, prompt);
+
+    // Save raw input
+    if (existsSync(RAW_LOG_DIR)) {
+        writeFileSync(resolve(RAW_LOG_DIR, `${simpleId}_${safeStepId}_input.md`), prompt);
+    }
+
+    log(`[${stepId}] Executing Claude (timeout: ${timeoutSec}s)...`);
+    // console.log('\x1b[90m--- output start ---\x1b[0m'); // Disabled real-time log in parallel mode to avoid interleaved garbage
+
+    let output = '';
+    let success = false;
+    let errorMsg: string | undefined;
+
+    try {
+        const isWindows = process.platform === 'win32';
+        const catCmd = isWindows ? 'type' : 'cat';
+        const cmd = `${catCmd} "${promptFile}" | claude -p - --dangerously-skip-permissions`;
+
+        const result = await execAsync(cmd, {
+            timeout: timeoutSec * 1000,
+            encoding: 'utf-8',
+            maxBuffer: 50 * 1024 * 1024,
+            shell: undefined // Use default shell
+        });
+
+        output = result.stdout;
+        success = true;
+
+    } catch (err: any) {
+        output = err.stdout || '';
+        errorMsg = err.message;
+        success = output.length > 50; // Consider partial success if some output
+    }
+
+    // console.log(output); // Log output at end
+    // console.log('\x1b[90m--- output end ---\x1b[0m');
+
+    // Save raw output
+    if (existsSync(RAW_LOG_DIR)) {
+        writeFileSync(resolve(RAW_LOG_DIR, `${simpleId}_${safeStepId}_${success ? 'ok' : 'fail'}.md`), output + (errorMsg ? `\n\nERROR: ${errorMsg}` : ''));
+    }
+
+    return { ok: success, output, error: errorMsg };
+}
 const __dirname = dirname(__filename);
 
 // ============== CLI FLAGS ==============
@@ -35,6 +103,8 @@ const CHECK_BUNDLE = args.find((a: string) => a.startsWith('--check='))?.split('
 const CHECK_ALL = args.includes('--check-all');
 const RUN_AUTOFIX = args.includes('--autofix');
 const RUN_SETUP = args.includes('--setup');
+const MOCK_MODE = args.includes('--mock');
+const PLAN_FILE = args.find((a: string) => a.startsWith('--plan='))?.split('=')[1] || 'plan.yaml';
 const SHOW_HELP = args.includes('--help') || args.includes('-h');
 
 if (SHOW_HELP) {
@@ -45,7 +115,9 @@ Usage: npm start -- [flags]
 
 Flags:
   --dry-run       Tylko loguj, nie wykonuj Claude
+  --mock          Symuluj wykonanie (wait 2s) bez dzwonienia do Claude
   --skip-checks   Pomiń check bundles
+  --plan=file.yml Użyj innego pliku planu (default: plan.yaml)
   --step=P3a      Uruchom tylko konkretny step
   --check=quick   Uruchom bundle 'quick' (tsc)
   --check=full    Uruchom bundle 'full' (tsc + eslint + build)
@@ -56,20 +128,21 @@ Flags:
 
 Examples:
   npm start                      # Uruchom workflow
-  npm start -- --dry-run         # Test bez Claude
+  npm start -- --mock --plan=tests/p.yaml  # Test symulacji
   npm start -- --check=quick     # Tylko tsc
-  npm start -- --setup           # Zainstaluj dependencies
 `);
     process.exit(0);
 }
 
 if (DRY_RUN) console.log('\x1b[33m[DRY-RUN MODE]\x1b[0m');
+if (MOCK_MODE) console.log('\x1b[35m[MOCK MODE - SIMULATED AI]\x1b[0m');
 if (SKIP_CHECKS) console.log('\x1b[33m[SKIP-CHECKS MODE]\x1b[0m');
 if (ONLY_STEP) console.log(`\x1b[33m[ONLY STEP: ${ONLY_STEP}]\x1b[0m`);
 if (CHECK_BUNDLE) console.log(`\x1b[33m[CHECK MODE: ${CHECK_BUNDLE}]\x1b[0m`);
 if (CHECK_ALL) console.log('\x1b[33m[CHECK-ALL MODE]\x1b[0m');
 if (RUN_AUTOFIX) console.log('\x1b[33m[AUTOFIX MODE]\x1b[0m');
 if (RUN_SETUP) console.log('\x1b[33m[SETUP MODE]\x1b[0m');
+if (PLAN_FILE !== 'plan.yaml') console.log(`\x1b[36m[PLAN: ${PLAN_FILE}]\x1b[0m`);
 
 // ============== RESUME MODE ==============
 
@@ -110,6 +183,8 @@ interface Step {
     skip_when?: string | null;
     type?: string;
     post_checks?: string;
+    parallel_group?: string;
+    depends_on?: string[];
 }
 
 interface Story {
@@ -206,7 +281,7 @@ const logCheck = (msg: string) => {
 // ============== HELPERS ==============
 
 function loadPlan(): PlanConfig {
-    return parseYaml(readFileSync(resolve(__dirname, 'plan.yaml'), 'utf-8')) as PlanConfig;
+    return parseYaml(readFileSync(resolve(__dirname, PLAN_FILE), 'utf-8')) as PlanConfig;
 }
 
 // ============== STORY ==============
@@ -456,13 +531,13 @@ function loadInstruction(step: Step, story: Story): string {
     return content;
 }
 
-function runStep(step: Step, story: Story, plan: PlanConfig): boolean {
+async function runStepAsync(step: Step, story: Story, plan: PlanConfig): Promise<boolean> {
     console.log('');
     logStep(`${step.id} | ${step.agent || 'agent'}`);
 
     const instruction = loadInstruction(step, story);
     const timeout = step.timeout_sec || plan.runner.default_timeout_sec;
-    const result = runClaude(instruction, timeout);
+    const result = await runClaudeAsync(instruction, timeout, step.id);
 
     const time = new Date().toISOString().slice(11, 16);
 
@@ -536,9 +611,61 @@ function runStep(step: Step, story: Story, plan: PlanConfig): boolean {
     }
 }
 
+// ============== PARALLEL EXECUTION ==============
+
+async function runParallelGroup(steps: Step[], story: Story, plan: PlanConfig): Promise<boolean> {
+    log(`Running parallel group: ${steps.map(s => s.id).join(', ')}`);
+
+    // Simple DAG scheduler
+    const pending = [...steps];
+    const executing = new Map<string, Promise<boolean>>();
+    const completed = new Set<string>();
+    let failed = false;
+
+    while (pending.length > 0 || executing.size > 0) {
+        // Find runnable steps
+        for (let i = pending.length - 1; i >= 0; i--) {
+            const step = pending[i];
+
+            // Checks for dependencies: if step has deps, all must be in 'completed' OR not in the parallel group at all (implied external/previous)
+            const deps = step.depends_on || [];
+            if (deps.every(d => completed.has(d) || !steps.some(s => s.id === d))) {
+                // Launch
+                pending.splice(i, 1);
+
+                log(`Starting parallel step: ${step.id}`);
+                const p = runStepAsync(step, story, plan).then(ok => {
+                    log(ok ? `${step.id} finished (OK)` : `${step.id} finished (FAIL)`);
+                    if (ok) completed.add(step.id);
+                    else failed = true;
+                    executing.delete(step.id);
+                    return ok;
+                });
+
+                executing.set(step.id, p);
+            }
+        }
+
+        if (executing.size === 0 && pending.length > 0) {
+            logErr('Deadlock in parallel group dependencies: ' + pending.map(s => s.id).join(', '));
+            return false;
+        }
+
+        if (executing.size === 0 && pending.length === 0) break;
+
+        // Wait for at least one to finish
+        // We use Promise.race on the map values
+        await Promise.race(executing.values());
+
+        if (failed) return false; // Abort early if one fails
+    }
+
+    return !failed;
+}
+
 // ============== MAIN ==============
 
-function main() {
+async function main() {
     console.log('\n\x1b[1m══════════════════════════════════════════════════\x1b[0m');
     console.log('\x1b[1m   Claude Workflow Runner - Story Delivery\x1b[0m');
     console.log('\x1b[1m══════════════════════════════════════════════════\x1b[0m\n');
@@ -666,7 +793,7 @@ function main() {
     // Ping test (skip in dry-run)
     if (!DRY_RUN) {
         log('Testing Claude CLI...');
-        const ping = runClaude('Say: OK', 120);
+        const ping = await runClaudeAsync('Say: OK', 120, 'PING');
         if (!ping.ok && ping.output.length < 10) {
             logErr('Claude not responding');
             process.exit(1);
@@ -697,32 +824,86 @@ function main() {
         checkpoint = loadCheckpoint(story, plan);
         let storyFailed = false;
 
-        for (const step of plan.steps) {
+        let i = 0;
+        while (i < plan.steps.length) {
             if (existsSync(resolve(__dirname, 'STOP'))) break;
 
+            const step = plan.steps[i];
+
             // Skip check-only steps (handled by post_checks)
-            if (step.type === 'check') continue;
+            if (step.type === 'check') {
+                i++;
+                continue;
+            }
 
             // If --step flag, only run that step
-            if (ONLY_STEP && step.id !== ONLY_STEP) continue;
+            if (ONLY_STEP && step.id !== ONLY_STEP) {
+                i++;
+                continue;
+            }
+
+            // Check if start of parallel group
+            if (step.parallel_group && !ONLY_STEP) {
+                const groupName = step.parallel_group;
+                const groupSteps: Step[] = [];
+
+                // Collect all steps in this group
+                let j = i;
+                while (j < plan.steps.length && plan.steps[j].parallel_group === groupName) {
+                    groupSteps.push(plan.steps[j]);
+                    j++;
+                }
+
+                if (groupSteps.length > 0) {
+                    const activeSteps: Step[] = [];
+                    for (const s of groupSteps) {
+                        const skip = shouldSkip(s, story);
+                        if (skip) {
+                            log(`Skip ${s.id}: ${skip}`);
+                            checkpoint.phases[s.id] = `⊘ ${skip}`;
+                            saveCheckpoint(checkpoint, plan);
+                            continue;
+                        }
+                        if (checkpoint.phases[s.id]?.startsWith('✓')) {
+                            log(`${s.id}: done`);
+                            continue;
+                        }
+                        activeSteps.push(s);
+                    }
+
+                    if (activeSteps.length > 0) {
+                        const ok = await runParallelGroup(activeSteps, story, plan);
+                        if (!ok) {
+                            storyFailed = true;
+                            break;
+                        }
+                    }
+
+                    i = j; // Advance main loop past group
+                    continue;
+                }
+            }
 
             const skip = shouldSkip(step, story);
             if (skip) {
                 log(`Skip ${step.id}: ${skip}`);
                 checkpoint.phases[step.id] = `⊘ ${skip}`;
                 saveCheckpoint(checkpoint, plan);
+                i++;
                 continue;
             }
 
             if (checkpoint.phases[step.id]?.startsWith('✓')) {
                 log(`${step.id}: done`);
+                i++;
                 continue;
             }
 
-            if (!runStep(step, story, plan)) {
+            if (!(await runStepAsync(step, story, plan))) {
                 storyFailed = true;
                 break;
             }
+            i++;
         }
 
         // If story completed successfully (and not just one step run), mark as processed
@@ -743,4 +924,7 @@ function main() {
 
 process.on('SIGINT', () => { log('\nInterrupted'); process.exit(130); });
 
-main();
+main().catch(err => {
+    console.error(err);
+    process.exit(1);
+});
