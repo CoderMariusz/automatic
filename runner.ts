@@ -2,10 +2,10 @@
  * Claude Workflow Runner - Story Delivery
  * 
  * Uruchamia Claude Code CLI z flagą -p dla każdego kroku.
- * Używa --output-format text dla prostszego parsowania.
+ * Async spawn z live output monitoring.
  */
 
-import { execSync, spawnSync } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, renameSync } from 'fs';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { resolve, dirname, basename } from 'path';
@@ -41,12 +41,6 @@ interface Checkpoint {
     phases: Record<string, string | null>;
 }
 
-interface Handoff {
-    from: string;
-    status: string;
-    summary: string;
-}
-
 interface PlanConfig {
     version: number;
     runner: {
@@ -66,6 +60,7 @@ interface PlanConfig {
 // ============== GLOBALS ==============
 
 let currentCheckpoint: Checkpoint | null = null;
+let currentProcess: ChildProcess | null = null;
 
 // ============== HELPERS ==============
 
@@ -75,7 +70,19 @@ function loadPlan(): PlanConfig {
 }
 
 function log(msg: string) {
-    console.log(`[${new Date().toISOString().slice(11, 19)}] ${msg}`);
+    console.log(`\x1b[36m[${new Date().toISOString().slice(11, 19)}]\x1b[0m ${msg}`);
+}
+
+function logStep(msg: string) {
+    console.log(`\x1b[33m>>> ${msg}\x1b[0m`);
+}
+
+function logSuccess(msg: string) {
+    console.log(`\x1b[32m✓ ${msg}\x1b[0m`);
+}
+
+function logError(msg: string) {
+    console.log(`\x1b[31m✗ ${msg}\x1b[0m`);
 }
 
 // ============== STORY MANAGEMENT ==============
@@ -113,7 +120,7 @@ function moveToProcessed(story: Story, plan: PlanConfig) {
         .filter(f => f.includes(story.story_id))
         .forEach(f => renameSync(resolve(from, f), resolve(to, f)));
 
-    log(`Story ${story.story_id} moved to processed`);
+    logSuccess(`Story ${story.story_id} moved to processed`);
 }
 
 // ============== CHECKPOINT ==============
@@ -158,7 +165,7 @@ function shouldSkip(step: Step, story: Story): string | null {
     return null;
 }
 
-// ============== CLAUDE EXECUTION ==============
+// ============== CLAUDE EXECUTION (ASYNC) ==============
 
 interface ClaudeResult {
     success: boolean;
@@ -166,90 +173,97 @@ interface ClaudeResult {
     error?: string;
 }
 
-function runClaude(prompt: string, timeoutSec: number): ClaudeResult {
-    // Zapisz prompt do pliku tymczasowego (unika problemów z escaping)
-    const promptFile = resolve(__dirname, '.temp_prompt.txt');
-    writeFileSync(promptFile, prompt);
+function runClaudeAsync(prompt: string, timeoutSec: number): Promise<ClaudeResult> {
+    return new Promise((resolve) => {
+        logStep(`Executing Claude (timeout: ${timeoutSec}s)...`);
+        console.log('\x1b[90m--- Claude output start ---\x1b[0m');
 
-    try {
-        // Użyj spawnSync z stdio inherit dla lepszego output
-        const result = spawnSync('claude', [
+        const proc = spawn('claude', [
             '-p', prompt,
-            '--dangerously-skip-permissions',
-            '--output-format', 'text'
+            '--dangerously-skip-permissions'
         ], {
-            timeout: timeoutSec * 1000,
-            encoding: 'utf-8',
             shell: true,
-            stdio: ['pipe', 'pipe', 'pipe'],
-            maxBuffer: 50 * 1024 * 1024 // 50MB buffer
-        });
-
-        const output = result.stdout || '';
-        const stderr = result.stderr || '';
-
-        // Print output in real-time simulation
-        if (output) console.log(output);
-        if (stderr && !stderr.includes('DeprecationWarning')) console.error(stderr);
-
-        if (result.error) {
-            return { success: false, output: '', error: result.error.message };
-        }
-
-        if (result.status !== 0 && result.status !== null) {
-            return { success: false, output, error: `Exit code: ${result.status}` };
-        }
-
-        return { success: true, output };
-    } catch (err: any) {
-        return { success: false, output: '', error: err.message };
-    }
-}
-
-// Alternatywna wersja z execSync
-function runClaudeExec(prompt: string, timeoutSec: number): ClaudeResult {
-    // Escape dla shell
-    const escaped = prompt.replace(/"/g, '\\"').replace(/`/g, '\\`');
-    const cmd = `claude -p "${escaped}" --dangerously-skip-permissions`;
-
-    try {
-        const output = execSync(cmd, {
-            timeout: timeoutSec * 1000,
-            encoding: 'utf-8',
-            maxBuffer: 50 * 1024 * 1024,
             stdio: ['pipe', 'pipe', 'pipe']
         });
 
-        console.log(output);
-        return { success: true, output };
-    } catch (err: any) {
-        const output = err.stdout || '';
-        const stderr = err.stderr || '';
-        console.log(output);
-        if (stderr) console.error(stderr);
+        currentProcess = proc;
 
-        // Jeśli mamy output, uznaj za sukces (Claude może wyjść z kodem != 0)
-        if (output && output.length > 50) {
-            return { success: true, output };
-        }
+        let output = '';
+        let stderr = '';
+        let resolved = false;
 
-        return { success: false, output, error: err.message };
-    }
+        // Timeout handler
+        const timeout = setTimeout(() => {
+            if (!resolved) {
+                resolved = true;
+                proc.kill('SIGTERM');
+                console.log('\x1b[90m--- Claude output end (timeout) ---\x1b[0m');
+                resolve({ success: false, output, error: `Timeout after ${timeoutSec}s` });
+            }
+        }, timeoutSec * 1000);
+
+        // Live stdout streaming
+        proc.stdout?.on('data', (data) => {
+            const text = data.toString();
+            output += text;
+            process.stdout.write(text); // Real-time output!
+        });
+
+        // Capture stderr
+        proc.stderr?.on('data', (data) => {
+            const text = data.toString();
+            stderr += text;
+            // Filter out deprecation warnings
+            if (!text.includes('DeprecationWarning')) {
+                process.stderr.write(`\x1b[31m${text}\x1b[0m`);
+            }
+        });
+
+        // Process exit
+        proc.on('close', (code) => {
+            if (resolved) return;
+            resolved = true;
+            clearTimeout(timeout);
+            currentProcess = null;
+
+            console.log('\x1b[90m--- Claude output end ---\x1b[0m');
+
+            // Success if exit code 0 or we got substantial output
+            if (code === 0 || output.length > 100) {
+                resolve({ success: true, output });
+            } else {
+                resolve({
+                    success: false,
+                    output,
+                    error: stderr || `Exit code: ${code}`
+                });
+            }
+        });
+
+        proc.on('error', (err) => {
+            if (resolved) return;
+            resolved = true;
+            clearTimeout(timeout);
+            currentProcess = null;
+            console.log('\x1b[90m--- Claude output end (error) ---\x1b[0m');
+            resolve({ success: false, output: '', error: err.message });
+        });
+    });
 }
 
 // ============== PING TEST ==============
 
-function pingTest(): boolean {
+async function pingTest(): Promise<boolean> {
     log('Step 0: Testing Claude Code CLI...');
 
-    const result = runClaudeExec('Say exactly: CLAUDE_OK', 60);
+    const result = await runClaudeAsync('Say exactly one word: OK', 60);
 
-    if (result.output && result.output.length > 5) {
-        log('Step 0: OK - Claude Code responding');
+    if (result.output && result.output.length > 0) {
+        logSuccess('Claude Code responding');
         return true;
     }
 
-    log(`Step 0: FAILED - ${result.error || 'No output'}`);
+    logError(`Claude not responding: ${result.error || 'No output'}`);
     return false;
 }
 
@@ -261,37 +275,38 @@ function loadInstruction(file: string, story: Story, stepId: string): string {
 
     let content = readFileSync(path, 'utf-8');
 
-    // Dodaj kontekst story
-    content += `\n\n## STORY\n${story.content}\n`;
+    // Add story context
+    content += `\n\n## STORY\n\`\`\`yaml\n${story.content}\n\`\`\`\n`;
 
-    // Dodaj kontrakt
-    content += `\n## CONTRACT\nEnd your response with:\n===NEXT_STEP_READY===`;
+    // Add contract
+    content += `\n## CONTRACT\nWhen finished, end with exactly:\n===NEXT_STEP_READY===`;
 
     return content;
 }
 
 // ============== STEP EXECUTION ==============
 
-function runStep(step: Step, story: Story, plan: PlanConfig): boolean {
-    log(`\n${'='.repeat(50)}`);
-    log(`Step: ${step.id} | Agent: ${step.agent || 'default'}`);
-    log(`${'='.repeat(50)}\n`);
+async function runStep(step: Step, story: Story, plan: PlanConfig): Promise<boolean> {
+    console.log('');
+    log(`${'='.repeat(50)}`);
+    logStep(`Step: ${step.id} | Agent: ${step.agent || 'default'}`);
+    log(`${'='.repeat(50)}`);
+    console.log('');
 
     const instruction = loadInstruction(step.file, story, step.id);
     const timeout = step.timeout_sec || plan.runner.default_timeout_sec;
 
-    log(`Executing Claude (timeout: ${timeout}s)...`);
-    const result = runClaudeExec(instruction, timeout);
+    const result = await runClaudeAsync(instruction, timeout);
 
     const time = new Date().toISOString().slice(11, 16);
 
     if (result.success) {
         updateCheckpoint(step.id, `✓ ${step.agent || 'agent'} ${time}`, currentCheckpoint!, plan);
-        log(`Step ${step.id}: COMPLETED ✓`);
+        logSuccess(`Step ${step.id}: COMPLETED`);
         return true;
     } else {
         updateCheckpoint(step.id, `✗ ${step.agent || 'agent'} ${time} error:${result.error}`, currentCheckpoint!, plan);
-        log(`Step ${step.id}: FAILED - ${result.error}`);
+        logError(`Step ${step.id}: FAILED - ${result.error}`);
         return false;
     }
 }
@@ -299,76 +314,98 @@ function runStep(step: Step, story: Story, plan: PlanConfig): boolean {
 // ============== MAIN ==============
 
 async function processStory(story: Story, plan: PlanConfig) {
-    log(`\n${'#'.repeat(60)}`);
-    log(`Story: ${story.story_id} (${story.type})`);
-    log(`${'#'.repeat(60)}\n`);
+    console.log('');
+    log(`${'#'.repeat(60)}`);
+    logStep(`Story: ${story.story_id} (${story.type})`);
+    log(`${'#'.repeat(60)}`);
+    console.log('');
 
     currentCheckpoint = loadOrCreateCheckpoint(story, plan);
 
     for (const step of plan.steps) {
-        // STOP file
+        // STOP file check
         if (existsSync(resolve(__dirname, 'STOP'))) {
-            log('STOP file - stopping');
+            log('STOP file detected - stopping');
             break;
         }
 
-        // Skip check-only
+        // Skip check-only steps
         if (step.type === 'check') continue;
 
         // Skip conditions
         const skipReason = shouldSkip(step, story);
         if (skipReason) {
-            log(`Skip ${step.id}: ${skipReason}`);
+            log(`Skipping ${step.id}: ${skipReason}`);
             updateCheckpoint(step.id, `⊘ ${skipReason}`, currentCheckpoint, plan);
             continue;
         }
 
-        // Already done?
+        // Already completed?
         if (currentCheckpoint.phases[step.id]?.startsWith('✓')) {
-            log(`${step.id}: already done`);
+            log(`${step.id}: already completed, skipping`);
             continue;
         }
 
-        // Execute
-        const ok = runStep(step, story, plan);
-        if (!ok) break;
+        // Execute step
+        const success = await runStep(step, story, plan);
+        if (!success) {
+            log('Stopping due to failure');
+            break;
+        }
     }
 }
 
-function main() {
-    log('Claude Workflow Runner - Story Delivery');
-    log('========================================\n');
+async function main() {
+    console.log('');
+    console.log('\x1b[1m╔══════════════════════════════════════════════════════╗\x1b[0m');
+    console.log('\x1b[1m║     Claude Workflow Runner - Story Delivery          ║\x1b[0m');
+    console.log('\x1b[1m╚══════════════════════════════════════════════════════╝\x1b[0m');
+    console.log('');
 
     const plan = loadPlan();
-    log(`Steps: ${plan.steps.length}`);
+    log(`Loaded ${plan.steps.length} steps from plan.yaml`);
 
     const stories = loadPendingStories(plan);
-    log(`Pending stories: ${stories.length}`);
+    log(`Found ${stories.length} pending stories`);
 
     if (stories.length === 0) {
         log('No stories in stories/pending/');
         process.exit(0);
     }
 
-    // Ping
-    if (!pingTest()) {
-        log('FATAL: Claude Code not responding');
-        log('Try running: claude -p "test" --dangerously-skip-permissions');
+    // Ping test
+    if (!await pingTest()) {
+        logError('Claude Code not responding. Try running:');
+        console.log('  claude -p "test" --dangerously-skip-permissions');
         process.exit(1);
     }
 
-    // Process
+    // Process each story
     for (const story of stories) {
-        if (existsSync(resolve(__dirname, 'STOP'))) break;
-        processStory(story, plan);
+        if (existsSync(resolve(__dirname, 'STOP'))) {
+            log('STOP file detected - exiting');
+            break;
+        }
+
+        await processStory(story, plan);
     }
 
-    log('\nDone.');
+    console.log('');
+    logSuccess('Runner finished');
+    process.exit(0);
 }
 
+// Graceful shutdown
 process.on('SIGINT', () => {
-    log('\nInterrupted');
+    console.log('');
+    log('Interrupted (Ctrl+C)');
+    if (currentProcess) {
+        currentProcess.kill('SIGTERM');
+    }
     process.exit(130);
 });
 
-main();
+main().catch(err => {
+    logError(`Fatal: ${err.message}`);
+    process.exit(1);
+});
