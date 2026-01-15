@@ -1,17 +1,16 @@
 /**
  * Claude Workflow Runner - Story Delivery
  * 
- * Uruchamia Claude CLI dla każdego kroku z flagą -p (prompt mode).
- * Wykonuje 7-fazowy workflow TDD dla stories.
+ * Uruchamia Claude Code CLI z flagą -p dla każdego kroku.
+ * Używa --output-format text dla prostszego parsowania.
  */
 
-import { spawn } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, renameSync } from 'fs';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { resolve, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
 
-// ESM __dirname equivalent
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -22,12 +21,8 @@ interface Step {
     file: string;
     agent?: string;
     timeout_sec?: number;
-    retries?: number;
     skip_when?: string | null;
-    parallel_group?: string;
-    depends_on?: string[];
     on_fail?: string;
-    post_checks?: string;
     type?: string;
 }
 
@@ -35,9 +30,6 @@ interface Story {
     story_id: string;
     epic: string;
     type: 'backend' | 'frontend' | 'fullstack';
-    priority: string;
-    complexity: string;
-    status: string;
     content: string;
 }
 
@@ -51,13 +43,8 @@ interface Checkpoint {
 
 interface Handoff {
     from: string;
-    to?: string;
-    story: string;
-    status: 'success' | 'blocked' | 'partial';
+    status: string;
     summary: string;
-    files_changed?: string[];
-    next_input?: string[];
-    action?: string;
 }
 
 interface PlanConfig {
@@ -66,11 +53,7 @@ interface PlanConfig {
         claude_cmd: string[];
         ready_marker: string;
         blocked_marker: string;
-        pause_marker: string;
-        handoff_marker: string;
-        session_handoff_marker: string;
         default_timeout_sec: number;
-        max_retries_per_step: number;
     };
     stories: {
         input_folder: string;
@@ -78,178 +61,101 @@ interface PlanConfig {
         checkpoint_folder: string;
     };
     steps: Step[];
-    fix_step: Step;
 }
 
 // ============== GLOBALS ==============
 
-let currentStory: Story | null = null;
 let currentCheckpoint: Checkpoint | null = null;
 
 // ============== HELPERS ==============
 
 function loadPlan(): PlanConfig {
     const planPath = resolve(__dirname, 'plan.yaml');
-    const content = readFileSync(planPath, 'utf-8');
-    return parseYaml(content) as PlanConfig;
+    return parseYaml(readFileSync(planPath, 'utf-8')) as PlanConfig;
 }
 
-function log(message: string) {
-    const timestamp = new Date().toISOString().slice(11, 19);
-    console.log(`[${timestamp}] ${message}`);
+function log(msg: string) {
+    console.log(`[${new Date().toISOString().slice(11, 19)}] ${msg}`);
 }
 
 // ============== STORY MANAGEMENT ==============
 
 function loadPendingStories(plan: PlanConfig): Story[] {
     const pendingPath = resolve(__dirname, plan.stories.input_folder);
-
     if (!existsSync(pendingPath)) {
         mkdirSync(pendingPath, { recursive: true });
         return [];
     }
 
-    const files = readdirSync(pendingPath).filter(f => f.endsWith('.yaml') || f.endsWith('.md'));
+    return readdirSync(pendingPath)
+        .filter(f => f.endsWith('.yaml') || f.endsWith('.md'))
+        .map(file => {
+            const content = readFileSync(resolve(pendingPath, file), 'utf-8');
+            const storyId = basename(file).replace(/\.(yaml|md)$/, '');
+            let parsed: any = {};
+            try { parsed = parseYaml(content); } catch { }
 
-    return files.map(file => {
-        const content = readFileSync(resolve(pendingPath, file), 'utf-8');
-        const storyId = basename(file, '.yaml').replace('.md', '');
-
-        let parsed: any = {};
-        try {
-            parsed = parseYaml(content);
-        } catch {
-            const match = content.match(/^---\n([\s\S]*?)\n---/);
-            if (match) {
-                parsed = parseYaml(match[1]);
-            }
-        }
-
-        return {
-            story_id: parsed.story_id || storyId,
-            epic: parsed.epic || 'unknown',
-            type: parsed.type || 'fullstack',
-            priority: parsed.priority || 'P1',
-            complexity: parsed.complexity || 'M',
-            status: parsed.status || 'pending',
-            content
-        };
-    });
+            return {
+                story_id: parsed.story_id || storyId,
+                epic: parsed.epic || 'unknown',
+                type: parsed.type || 'fullstack',
+                content
+            };
+        });
 }
 
 function moveToProcessed(story: Story, plan: PlanConfig) {
-    const pendingPath = resolve(__dirname, plan.stories.input_folder);
-    const processedPath = resolve(__dirname, plan.stories.processed_folder);
+    const from = resolve(__dirname, plan.stories.input_folder);
+    const to = resolve(__dirname, plan.stories.processed_folder);
+    if (!existsSync(to)) mkdirSync(to, { recursive: true });
 
-    if (!existsSync(processedPath)) {
-        mkdirSync(processedPath, { recursive: true });
-    }
-
-    const files = readdirSync(pendingPath).filter(f => f.includes(story.story_id));
-    for (const file of files) {
-        renameSync(resolve(pendingPath, file), resolve(processedPath, file));
-    }
+    readdirSync(from)
+        .filter(f => f.includes(story.story_id))
+        .forEach(f => renameSync(resolve(from, f), resolve(to, f)));
 
     log(`Story ${story.story_id} moved to processed`);
 }
 
-// ============== CHECKPOINT MANAGEMENT ==============
+// ============== CHECKPOINT ==============
 
 function loadOrCreateCheckpoint(story: Story, plan: PlanConfig): Checkpoint {
-    const checkpointPath = resolve(__dirname, plan.stories.checkpoint_folder, `${story.story_id}.yaml`);
+    const dir = resolve(__dirname, plan.stories.checkpoint_folder);
+    const path = resolve(dir, `${story.story_id}.yaml`);
 
-    if (existsSync(checkpointPath)) {
-        const content = readFileSync(checkpointPath, 'utf-8');
-        return parseYaml(content) as Checkpoint;
+    if (existsSync(path)) {
+        return parseYaml(readFileSync(path, 'utf-8')) as Checkpoint;
     }
 
-    const checkpoint: Checkpoint = {
+    const cp: Checkpoint = {
         story_id: story.story_id,
         epic: story.epic,
         type: story.type,
         status: 'in_progress',
-        phases: {
-            P1: null, P2: null, P3a: null, P3b: null,
-            P3c: null, P3d: null, P4: null, P5: null,
-            P6: null, P7: null
-        }
+        phases: { P1: null, P2: null, P3a: null, P3b: null, P3c: null, P3d: null, P4: null, P5: null, P6: null, P7: null }
     };
 
-    saveCheckpoint(checkpoint, plan);
-    return checkpoint;
+    saveCheckpoint(cp, plan);
+    return cp;
 }
 
-function saveCheckpoint(checkpoint: Checkpoint, plan: PlanConfig) {
-    const checkpointDir = resolve(__dirname, plan.stories.checkpoint_folder);
-    if (!existsSync(checkpointDir)) {
-        mkdirSync(checkpointDir, { recursive: true });
-    }
-
-    const checkpointPath = resolve(checkpointDir, `${checkpoint.story_id}.yaml`);
-    writeFileSync(checkpointPath, stringifyYaml(checkpoint));
+function saveCheckpoint(cp: Checkpoint, plan: PlanConfig) {
+    const dir = resolve(__dirname, plan.stories.checkpoint_folder);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(resolve(dir, `${cp.story_id}.yaml`), stringifyYaml(cp));
 }
 
-function updateCheckpoint(stepId: string, status: string, checkpoint: Checkpoint, plan: PlanConfig) {
-    const time = new Date().toISOString().slice(11, 16);
-    checkpoint.phases[stepId] = status.startsWith('✓') || status.startsWith('✗')
-        ? status
-        : `✓ ${status} ${time}`;
-    saveCheckpoint(checkpoint, plan);
+function updateCheckpoint(stepId: string, status: string, cp: Checkpoint, plan: PlanConfig) {
+    cp.phases[stepId] = status;
+    saveCheckpoint(cp, plan);
 }
 
 // ============== SKIP LOGIC ==============
 
-function shouldSkipStep(step: Step, story: Story): { skip: boolean; reason: string } {
-    if (!step.skip_when) return { skip: false, reason: '' };
-
-    if (step.skip_when === 'backend-only' && story.type === 'backend') {
-        return { skip: true, reason: 'backend-only' };
-    }
-    if (step.skip_when === 'frontend-only' && story.type === 'frontend') {
-        return { skip: true, reason: 'frontend-only' };
-    }
-
-    return { skip: false, reason: '' };
-}
-
-// ============== INSTRUCTION LOADING ==============
-
-function loadInstruction(file: string, story: Story): string {
-    const filePath = resolve(__dirname, file);
-    if (!existsSync(filePath)) {
-        throw new Error(`Instruction file not found: ${filePath}`);
-    }
-
-    let content = readFileSync(filePath, 'utf-8');
-    content += `\n\n---\n## STORY CONTEXT\n\`\`\`yaml\n${story.content}\n\`\`\`\n`;
-
-    // Add contract
-    content += `
----
-KONTRAKT: Zakończ odpowiedź dokładnie tak:
-===HANDOFF===
-from: ${file.match(/P\d+[a-d]?/)?.[0] || 'step'}
-status: success
-summary: "krótki opis co zrobione"
-===NEXT_STEP_READY===
-`;
-
-    return content;
-}
-
-// ============== HANDOFF PARSING ==============
-
-function parseHandoff(output: string, plan: PlanConfig): Handoff | null {
-    const marker = plan.runner.handoff_marker;
-    const handoffMatch = output.match(new RegExp(`${marker}\\s*\\n([\\s\\S]*?)(?:${plan.runner.ready_marker}|$)`));
-
-    if (!handoffMatch) return null;
-
-    try {
-        return parseYaml(handoffMatch[1].trim()) as Handoff;
-    } catch {
-        return null;
-    }
+function shouldSkip(step: Step, story: Story): string | null {
+    if (!step.skip_when) return null;
+    if (step.skip_when === 'backend-only' && story.type === 'backend') return 'backend-only';
+    if (step.skip_when === 'frontend-only' && story.type === 'frontend') return 'frontend-only';
+    return null;
 }
 
 // ============== CLAUDE EXECUTION ==============
@@ -257,264 +163,212 @@ function parseHandoff(output: string, plan: PlanConfig): Handoff | null {
 interface ClaudeResult {
     success: boolean;
     output: string;
-    handoff: Handoff | null;
-    blocked: boolean;
-    blockReason?: string;
+    error?: string;
 }
 
-function runClaude(prompt: string, plan: PlanConfig, timeoutMs: number): Promise<ClaudeResult> {
-    return new Promise((resolve) => {
-        const [cmd, ...baseArgs] = plan.runner.claude_cmd;
+function runClaude(prompt: string, timeoutSec: number): ClaudeResult {
+    // Zapisz prompt do pliku tymczasowego (unika problemów z escaping)
+    const promptFile = resolve(__dirname, '.temp_prompt.txt');
+    writeFileSync(promptFile, prompt);
 
-        // Use -p flag for prompt mode with --dangerously-skip-permissions for automation
-        const args = [...baseArgs, '-p', prompt, '--dangerously-skip-permissions'];
-
-        log(`Executing Claude (timeout: ${timeoutMs / 1000}s)...`);
-
-        const proc = spawn(cmd, args, {
+    try {
+        // Użyj spawnSync z stdio inherit dla lepszego output
+        const result = spawnSync('claude', [
+            '-p', prompt,
+            '--dangerously-skip-permissions',
+            '--output-format', 'text'
+        ], {
+            timeout: timeoutSec * 1000,
+            encoding: 'utf-8',
             shell: true,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            maxBuffer: 50 * 1024 * 1024 // 50MB buffer
+        });
+
+        const output = result.stdout || '';
+        const stderr = result.stderr || '';
+
+        // Print output in real-time simulation
+        if (output) console.log(output);
+        if (stderr && !stderr.includes('DeprecationWarning')) console.error(stderr);
+
+        if (result.error) {
+            return { success: false, output: '', error: result.error.message };
+        }
+
+        if (result.status !== 0 && result.status !== null) {
+            return { success: false, output, error: `Exit code: ${result.status}` };
+        }
+
+        return { success: true, output };
+    } catch (err: any) {
+        return { success: false, output: '', error: err.message };
+    }
+}
+
+// Alternatywna wersja z execSync
+function runClaudeExec(prompt: string, timeoutSec: number): ClaudeResult {
+    // Escape dla shell
+    const escaped = prompt.replace(/"/g, '\\"').replace(/`/g, '\\`');
+    const cmd = `claude -p "${escaped}" --dangerously-skip-permissions`;
+
+    try {
+        const output = execSync(cmd, {
+            timeout: timeoutSec * 1000,
+            encoding: 'utf-8',
+            maxBuffer: 50 * 1024 * 1024,
             stdio: ['pipe', 'pipe', 'pipe']
         });
 
-        let output = '';
-        let stderr = '';
-        let resolved = false;
+        console.log(output);
+        return { success: true, output };
+    } catch (err: any) {
+        const output = err.stdout || '';
+        const stderr = err.stderr || '';
+        console.log(output);
+        if (stderr) console.error(stderr);
 
-        const timeout = setTimeout(() => {
-            if (!resolved) {
-                resolved = true;
-                proc.kill();
-                resolve({
-                    success: false,
-                    output,
-                    handoff: null,
-                    blocked: true,
-                    blockReason: `Timeout after ${timeoutMs / 1000}s`
-                });
-            }
-        }, timeoutMs);
+        // Jeśli mamy output, uznaj za sukces (Claude może wyjść z kodem != 0)
+        if (output && output.length > 50) {
+            return { success: true, output };
+        }
 
-        proc.stdout?.on('data', (data) => {
-            const text = data.toString();
-            output += text;
-            process.stdout.write(text);
-        });
-
-        proc.stderr?.on('data', (data) => {
-            stderr += data.toString();
-        });
-
-        proc.on('close', (code) => {
-            if (resolved) return;
-            resolved = true;
-            clearTimeout(timeout);
-
-            // Check for markers
-            const hasReady = output.includes(plan.runner.ready_marker);
-            const blockedMatch = output.match(new RegExp(`${plan.runner.blocked_marker}(.+)`));
-            const handoff = parseHandoff(output, plan);
-
-            if (blockedMatch) {
-                resolve({
-                    success: false,
-                    output,
-                    handoff,
-                    blocked: true,
-                    blockReason: blockedMatch[1].trim()
-                });
-            } else if (hasReady || code === 0) {
-                resolve({
-                    success: true,
-                    output,
-                    handoff,
-                    blocked: false
-                });
-            } else {
-                resolve({
-                    success: false,
-                    output,
-                    handoff: null,
-                    blocked: true,
-                    blockReason: stderr || `Exit code: ${code}`
-                });
-            }
-        });
-
-        proc.on('error', (err) => {
-            if (resolved) return;
-            resolved = true;
-            clearTimeout(timeout);
-            resolve({
-                success: false,
-                output: '',
-                handoff: null,
-                blocked: true,
-                blockReason: err.message
-            });
-        });
-    });
+        return { success: false, output, error: err.message };
+    }
 }
 
 // ============== PING TEST ==============
 
-async function pingTest(plan: PlanConfig): Promise<boolean> {
-    log('Step 0: Testing Claude CLI...');
+function pingTest(): boolean {
+    log('Step 0: Testing Claude Code CLI...');
 
-    const result = await runClaude(
-        'Respond with exactly one line: TEST_OK',
-        plan,
-        30000
-    );
+    const result = runClaudeExec('Say exactly: CLAUDE_OK', 60);
 
-    if (result.success && result.output.includes('TEST_OK')) {
-        log('Step 0: OK - Claude CLI working');
+    if (result.output && result.output.length > 5) {
+        log('Step 0: OK - Claude Code responding');
         return true;
     }
 
-    // Even if no TEST_OK, if we got output, Claude is working
-    if (result.output.length > 10) {
-        log('Step 0: OK - Claude CLI responding');
-        return true;
-    }
-
-    log(`Step 0: FAILED - ${result.blockReason || 'No response'}`);
+    log(`Step 0: FAILED - ${result.error || 'No output'}`);
     return false;
+}
+
+// ============== INSTRUCTION LOADING ==============
+
+function loadInstruction(file: string, story: Story, stepId: string): string {
+    const path = resolve(__dirname, file);
+    if (!existsSync(path)) throw new Error(`Not found: ${path}`);
+
+    let content = readFileSync(path, 'utf-8');
+
+    // Dodaj kontekst story
+    content += `\n\n## STORY\n${story.content}\n`;
+
+    // Dodaj kontrakt
+    content += `\n## CONTRACT\nEnd your response with:\n===NEXT_STEP_READY===`;
+
+    return content;
 }
 
 // ============== STEP EXECUTION ==============
 
-async function runStep(step: Step, story: Story, plan: PlanConfig): Promise<ClaudeResult> {
+function runStep(step: Step, story: Story, plan: PlanConfig): boolean {
     log(`\n${'='.repeat(50)}`);
     log(`Step: ${step.id} | Agent: ${step.agent || 'default'}`);
     log(`${'='.repeat(50)}\n`);
 
-    const instruction = loadInstruction(step.file, story);
-    const timeoutMs = (step.timeout_sec || plan.runner.default_timeout_sec) * 1000;
+    const instruction = loadInstruction(step.file, story, step.id);
+    const timeout = step.timeout_sec || plan.runner.default_timeout_sec;
 
-    return runClaude(instruction, plan, timeoutMs);
+    log(`Executing Claude (timeout: ${timeout}s)...`);
+    const result = runClaudeExec(instruction, timeout);
+
+    const time = new Date().toISOString().slice(11, 16);
+
+    if (result.success) {
+        updateCheckpoint(step.id, `✓ ${step.agent || 'agent'} ${time}`, currentCheckpoint!, plan);
+        log(`Step ${step.id}: COMPLETED ✓`);
+        return true;
+    } else {
+        updateCheckpoint(step.id, `✗ ${step.agent || 'agent'} ${time} error:${result.error}`, currentCheckpoint!, plan);
+        log(`Step ${step.id}: FAILED - ${result.error}`);
+        return false;
+    }
 }
 
-// ============== MAIN FLOW ==============
+// ============== MAIN ==============
 
 async function processStory(story: Story, plan: PlanConfig) {
     log(`\n${'#'.repeat(60)}`);
-    log(`Processing Story: ${story.story_id} (${story.type})`);
+    log(`Story: ${story.story_id} (${story.type})`);
     log(`${'#'.repeat(60)}\n`);
 
-    currentStory = story;
     currentCheckpoint = loadOrCreateCheckpoint(story, plan);
 
     for (const step of plan.steps) {
-        // Check STOP file
+        // STOP file
         if (existsSync(resolve(__dirname, 'STOP'))) {
-            log('STOP file detected. Stopping.');
+            log('STOP file - stopping');
             break;
         }
 
-        // Skip check-only steps
-        if (step.type === 'check') {
-            log(`Running checks: ${step.post_checks}`);
-            // TODO: Implement check execution
+        // Skip check-only
+        if (step.type === 'check') continue;
+
+        // Skip conditions
+        const skipReason = shouldSkip(step, story);
+        if (skipReason) {
+            log(`Skip ${step.id}: ${skipReason}`);
+            updateCheckpoint(step.id, `⊘ ${skipReason}`, currentCheckpoint, plan);
             continue;
         }
 
-        // Skip logic
-        const { skip, reason } = shouldSkipStep(step, story);
-        if (skip) {
-            log(`Skipping ${step.id}: ${reason}`);
-            updateCheckpoint(step.id, `⊘ skipped reason:${reason}`, currentCheckpoint, plan);
-            continue;
-        }
-
-        // Already completed?
+        // Already done?
         if (currentCheckpoint.phases[step.id]?.startsWith('✓')) {
-            log(`${step.id} already completed, skipping.`);
+            log(`${step.id}: already done`);
             continue;
         }
 
-        // Execute step
-        const result = await runStep(step, story, plan);
-
-        if (result.success) {
-            const summary = result.handoff?.summary || 'completed';
-            updateCheckpoint(step.id, `✓ ${step.agent || 'agent'} ${summary}`, currentCheckpoint, plan);
-            log(`\nStep ${step.id}: COMPLETED ✓`);
-
-        } else {
-            updateCheckpoint(step.id, `✗ ${step.agent || 'agent'} blocked:${result.blockReason}`, currentCheckpoint, plan);
-            log(`\nStep ${step.id}: BLOCKED - ${result.blockReason}`);
-
-            if (step.on_fail) {
-                log(`Would route to: ${step.on_fail}`);
-            }
-            break;
-        }
-    }
-
-    // Check completion
-    const phases = currentCheckpoint.phases;
-    const allDone = Object.entries(phases).every(
-        ([key, val]) => val === null || val.startsWith('✓') || val.startsWith('⊘') || key === 'COMPLETE'
-    );
-
-    if (allDone && !Object.values(phases).some(p => p === null)) {
-        currentCheckpoint.status = 'done';
-        const now = new Date().toISOString();
-        phases['COMPLETE'] = `✓ ${now.slice(0, 10)} ${now.slice(11, 16)} status:DONE`;
-        saveCheckpoint(currentCheckpoint, plan);
-        moveToProcessed(story, plan);
-        log(`\nStory ${story.story_id}: COMPLETE ✓`);
+        // Execute
+        const ok = runStep(step, story, plan);
+        if (!ok) break;
     }
 }
 
-async function main() {
+function main() {
     log('Claude Workflow Runner - Story Delivery');
     log('========================================\n');
 
     const plan = loadPlan();
-    log(`Loaded plan.yaml with ${plan.steps.length} steps`);
+    log(`Steps: ${plan.steps.length}`);
 
     const stories = loadPendingStories(plan);
-    log(`Found ${stories.length} pending stories`);
+    log(`Pending stories: ${stories.length}`);
 
     if (stories.length === 0) {
-        log('No stories to process. Add stories to stories/pending/');
+        log('No stories in stories/pending/');
         process.exit(0);
     }
 
-    // Ping test
-    const pingOk = await pingTest(plan);
-    if (!pingOk) {
-        log('FATAL: Claude CLI not working. Check installation.');
+    // Ping
+    if (!pingTest()) {
+        log('FATAL: Claude Code not responding');
+        log('Try running: claude -p "test" --dangerously-skip-permissions');
         process.exit(1);
     }
 
-    // Process stories
+    // Process
     for (const story of stories) {
-        if (existsSync(resolve(__dirname, 'STOP'))) {
-            log('STOP file detected. Exiting.');
-            break;
-        }
-
-        await processStory(story, plan);
+        if (existsSync(resolve(__dirname, 'STOP'))) break;
+        processStory(story, plan);
     }
 
-    log('\nRunner finished.');
-    process.exit(0);
+    log('\nDone.');
 }
 
-// Handle Ctrl+C
 process.on('SIGINT', () => {
-    log('\nSIGINT received. Saving state...');
-    if (currentCheckpoint && currentStory) {
-        const plan = loadPlan();
-        currentCheckpoint.status = 'interrupted';
-        saveCheckpoint(currentCheckpoint, plan);
-    }
+    log('\nInterrupted');
     process.exit(130);
 });
 
-main().catch((err) => {
-    console.error('Fatal error:', err);
-    process.exit(1);
-});
+main();
