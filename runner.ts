@@ -152,17 +152,62 @@ interface PlanConfig {
     fix_step: Step;
 }
 
+// ============== LOGGING ==============
+
+const LOG_DIR = resolve(__dirname, 'logs');
+const RUN_ID = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+const RUN_FOLDER = resolve(LOG_DIR, RUN_ID);
+const TIMELINE_LOG = resolve(RUN_FOLDER, 'timeline.log');
+const RAW_LOG_DIR = resolve(RUN_FOLDER, 'raw');
+
+function setupLogging() {
+    if (DRY_RUN) return;
+    if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR);
+    if (!existsSync(RUN_FOLDER)) mkdirSync(RUN_FOLDER);
+    if (!existsSync(RAW_LOG_DIR)) mkdirSync(RAW_LOG_DIR);
+
+    // Initial log
+    writeFileSync(TIMELINE_LOG, `Run ID: ${RUN_ID}\nDate: ${new Date().toISOString()}\n\n`);
+}
+
+function logToFile(msg: string) {
+    if (DRY_RUN) return;
+    try {
+        if (!existsSync(RUN_FOLDER)) setupLogging();
+        // Remove color codes for file log
+        const cleanMsg = msg.replace(/\x1b\[[0-9;]*m/g, '');
+        // Append to timeline.log (using a workaround for appendFileSync since I didn't import it)
+        const oldContent = existsSync(TIMELINE_LOG) ? readFileSync(TIMELINE_LOG, 'utf-8') : '';
+        writeFileSync(TIMELINE_LOG, oldContent + cleanMsg + '\n');
+    } catch { }
+}
+
+const log = (msg: string) => {
+    console.log(`\x1b[36m[${new Date().toISOString().slice(11, 19)}]\x1b[0m ${msg}`);
+    logToFile(`[${new Date().toISOString().slice(11, 19)}] ${msg}`);
+};
+const logStep = (msg: string) => {
+    console.log(`\x1b[33m>>> ${msg}\x1b[0m`);
+    logToFile(`>>> ${msg}`);
+};
+const logOk = (msg: string) => {
+    console.log(`\x1b[32m✓ ${msg}\x1b[0m`);
+    logToFile(`✓ ${msg}`);
+};
+const logErr = (msg: string) => {
+    console.log(`\x1b[31m✗ ${msg}\x1b[0m`);
+    logToFile(`✗ ${msg}`);
+};
+const logCheck = (msg: string) => {
+    console.log(`\x1b[35m[CHECK] ${msg}\x1b[0m`);
+    logToFile(`[CHECK] ${msg}`);
+};
+
 // ============== HELPERS ==============
 
 function loadPlan(): PlanConfig {
     return parseYaml(readFileSync(resolve(__dirname, 'plan.yaml'), 'utf-8')) as PlanConfig;
 }
-
-const log = (msg: string) => console.log(`\x1b[36m[${new Date().toISOString().slice(11, 19)}]\x1b[0m ${msg}`);
-const logStep = (msg: string) => console.log(`\x1b[33m>>> ${msg}\x1b[0m`);
-const logOk = (msg: string) => console.log(`\x1b[32m✓ ${msg}\x1b[0m`);
-const logErr = (msg: string) => console.log(`\x1b[31m✗ ${msg}\x1b[0m`);
-const logCheck = (msg: string) => console.log(`\x1b[35m[CHECK] ${msg}\x1b[0m`);
 
 // ============== STORY ==============
 
@@ -344,37 +389,51 @@ function runClaude(prompt: string, timeoutSec: number): { ok: boolean; output: s
         return { ok: true, output: '[dry-run output]' };
     }
 
+    const simpleId = new Date().toISOString().slice(11, 19).replace(/:/g, '');
     const promptFile = resolve(__dirname, '.prompt.tmp');
     writeFileSync(promptFile, prompt);
 
+    // Save raw input
+    if (existsSync(RAW_LOG_DIR)) {
+        writeFileSync(resolve(RAW_LOG_DIR, `${simpleId}_input.md`), prompt);
+    }
+
     log(`Executing Claude (timeout: ${timeoutSec}s)...`);
     console.log('\x1b[90m--- output start ---\x1b[0m');
+
+    let output = '';
+    let success = false;
+    let errorMsg: string | undefined;
 
     try {
         const isWindows = process.platform === 'win32';
         const catCmd = isWindows ? 'type' : 'cat';
         const cmd = `${catCmd} "${promptFile}" | claude -p - --dangerously-skip-permissions`;
 
-        const output = execSync(cmd, {
+        output = execSync(cmd, {
             timeout: timeoutSec * 1000,
             encoding: 'utf-8',
             maxBuffer: 50 * 1024 * 1024,
             stdio: ['pipe', 'pipe', 'pipe'],
             shell: true
         });
-
-        console.log(output);
-        console.log('\x1b[90m--- output end ---\x1b[0m');
-        return { ok: true, output };
+        success = true;
 
     } catch (err: any) {
-        const output = err.stdout || '';
-        if (output) console.log(output);
-        console.log('\x1b[90m--- output end ---\x1b[0m');
-
-        if (output.length > 50) return { ok: true, output };
-        return { ok: false, output, error: err.message };
+        output = err.stdout || '';
+        errorMsg = err.message;
+        success = output.length > 50; // Consider partial success if some output
     }
+
+    console.log(output);
+    console.log('\x1b[90m--- output end ---\x1b[0m');
+
+    // Save raw output
+    if (existsSync(RAW_LOG_DIR)) {
+        writeFileSync(resolve(RAW_LOG_DIR, `${simpleId}_${success ? 'ok' : 'fail'}.md`), output + (errorMsg ? `\n\nERROR: ${errorMsg}` : ''));
+    }
+
+    return { ok: success, output, error: errorMsg };
 }
 
 // ============== STEPS ==============
