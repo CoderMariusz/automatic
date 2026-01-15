@@ -71,6 +71,30 @@ if (CHECK_ALL) console.log('\x1b[33m[CHECK-ALL MODE]\x1b[0m');
 if (RUN_AUTOFIX) console.log('\x1b[33m[AUTOFIX MODE]\x1b[0m');
 if (RUN_SETUP) console.log('\x1b[33m[SETUP MODE]\x1b[0m');
 
+// ============== RESUME MODE ==============
+
+const RUN_RESUME = args.includes('--resume');
+
+interface RunnerState {
+    lastRun: string;
+    processedStories: string[];
+    currentStory?: string;
+}
+
+const STATE_FILE = resolve(__dirname, 'state.json');
+
+function loadState(): RunnerState {
+    if (existsSync(STATE_FILE)) {
+        return JSON.parse(readFileSync(STATE_FILE, 'utf-8'));
+    }
+    return { lastRun: new Date().toISOString(), processedStories: [] };
+}
+
+function saveState(state: RunnerState) {
+    state.lastRun = new Date().toISOString();
+    writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+}
+
 // ============== TYPES ==============
 
 interface CheckCmd {
@@ -559,7 +583,18 @@ function main() {
         return;
     }
 
+
     // ============== NORMAL WORKFLOW ==============
+
+    let runnerState = loadState();
+
+    if (RUN_RESUME) {
+        log(`Resuming from state (processed: ${runnerState.processedStories.length})...`);
+    } else {
+        // Reset state if not resuming
+        runnerState = { lastRun: new Date().toISOString(), processedStories: [] };
+        saveState(runnerState);
+    }
 
     const stories = loadStories(plan);
     log(`Found ${stories.length} pending stories`);
@@ -587,11 +622,21 @@ function main() {
             break;
         }
 
+        // Skip processed stories if resuming
+        if (RUN_RESUME && runnerState.processedStories.includes(story.story_id)) {
+            continue;
+        }
+
+        // Update state current story
+        runnerState.currentStory = story.story_id;
+        saveState(runnerState);
+
         console.log('\n' + '='.repeat(60));
         logStep(`Story: ${story.story_id} (${story.type})`);
         console.log('='.repeat(60));
 
         checkpoint = loadCheckpoint(story, plan);
+        let storyFailed = false;
 
         for (const step of plan.steps) {
             if (existsSync(resolve(__dirname, 'STOP'))) break;
@@ -615,9 +660,23 @@ function main() {
                 continue;
             }
 
-            if (!runStep(step, story, plan)) break;
+            if (!runStep(step, story, plan)) {
+                storyFailed = true;
+                break;
+            }
+        }
+
+        // If story completed successfully (and not just one step run), mark as processed
+        if (!storyFailed && !ONLY_STEP && !existsSync(resolve(__dirname, 'STOP'))) {
+            if (!runnerState.processedStories.includes(story.story_id)) {
+                runnerState.processedStories.push(story.story_id);
+            }
+            runnerState.currentStory = undefined;
+            saveState(runnerState);
+            logOk(`Story ${story.story_id} completed & saved to state`);
         }
     }
+
 
     console.log('');
     logOk('Done');
