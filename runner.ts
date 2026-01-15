@@ -520,11 +520,75 @@ function shouldSkip(step: Step, story: Story): string | null {
     return null;
 }
 
+function processAttachments(content: string): string {
+    const lines = content.split('\n');
+    const processedLines: string[] = [];
+
+    for (const line of lines) {
+        // Match ATTACH: path/to/file[:range]
+        const match = line.match(/^ATTACH:\s*([^\s:]+)(?::([0-9-]*))?\s*$/);
+
+        if (match) {
+            const relPath = match[1];
+            const rangeSpec = match[2];
+            const absPath = resolve(__dirname, relPath);
+
+            if (existsSync(absPath)) {
+                try {
+                    const fileContent = readFileSync(absPath, 'utf-8');
+                    const fileLines = fileContent.split('\n');
+                    let subset = fileLines;
+                    let rangeInfo = '';
+
+                    if (rangeSpec) {
+                        if (rangeSpec.startsWith('-')) {
+                            // Tail: -N e.g. -50
+                            const count = parseInt(rangeSpec.slice(1));
+                            subset = fileLines.slice(-count);
+                            rangeInfo = ` (Tail ${count})`;
+                        } else if (rangeSpec.endsWith('-')) {
+                            // Start to end: N- e.g. 10-
+                            const start = parseInt(rangeSpec.slice(0, -1));
+                            subset = fileLines.slice(Math.max(0, start - 1));
+                            rangeInfo = ` (Line ${start}+)`;
+                        } else if (rangeSpec.includes('-')) {
+                            // Range: N-M e.g. 10-20
+                            const parts = rangeSpec.split('-');
+                            const start = parseInt(parts[0]);
+                            const end = parseInt(parts[1]);
+                            subset = fileLines.slice(Math.max(0, start - 1), end);
+                            rangeInfo = ` (Lines ${start}-${end})`;
+                        }
+                    }
+
+                    processedLines.push(`\n**Attached${rangeInfo}: ${relPath}**`);
+                    processedLines.push('```' + (relPath.split('.').pop() || '') + '\n' + subset.join('\n') + '\n```');
+                    log(`Attached ${relPath}${rangeInfo}`);
+
+                } catch (err: any) {
+                    logErr(`Failed to attach ${relPath}: ${err.message}`);
+                    processedLines.push(`[ERROR: Could not read attached file ${relPath}]`);
+                }
+            } else {
+                logErr(`Attachment not found: ${absPath}`);
+                processedLines.push(`[MISSING ATTACHMENT: ${relPath}]`);
+            }
+        } else {
+            processedLines.push(line);
+        }
+    }
+    return processedLines.join('\n');
+}
+
 function loadInstruction(step: Step, story: Story): string {
     const path = resolve(__dirname, step.file);
     if (!existsSync(path)) throw new Error(`Not found: ${path}`);
 
     let content = readFileSync(path, 'utf-8');
+
+    // Process ATTACH markers
+    content = processAttachments(content);
+
     content += `\n\n## STORY\n\`\`\`yaml\n${story.content}\n\`\`\``;
     content += `\n\n## CONTRACT\nWhen done, end with: ===NEXT_STEP_READY===`;
 

@@ -1,0 +1,20 @@
+version: 1
+runner:
+  claude_cmd: ["claude"]
+  default_timeout_sec: 10
+checks:
+  enabled: false
+  bundles: {}
+autofix:
+  enabled: false
+  commands: []
+stories:
+  input_folder: "tests/stories"
+  processed_folder: "tests/processed"
+  checkpoint_folder: "tests/checkpoints"
+steps:
+  - id: TEST_ATTACH
+    file: "instructions/test-attach.md"
+fix_step:
+  id: fix
+  file: "instructions/pFix.md"
