@@ -3,6 +3,11 @@
  * 
  * Uruchamia Claude Code CLI z flagą -p dla każdego kroku.
  * Używa execSync (synchroniczne) - bardziej niezawodne.
+ * 
+ * Flagi:
+ *   --dry-run     Tylko loguj, nie wykonuj Claude
+ *   --skip-checks Pomiń check bundles
+ *   --step=P3a    Uruchom tylko konkretny step
  */
 
 import { execSync } from 'child_process';
@@ -14,7 +19,23 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// ============== CLI FLAGS ==============
+
+const args = process.argv.slice(2);
+const DRY_RUN = args.includes('--dry-run');
+const SKIP_CHECKS = args.includes('--skip-checks');
+const ONLY_STEP = args.find(a => a.startsWith('--step='))?.split('=')[1];
+
+if (DRY_RUN) console.log('\x1b[33m[DRY-RUN MODE]\x1b[0m');
+if (SKIP_CHECKS) console.log('\x1b[33m[SKIP-CHECKS MODE]\x1b[0m');
+if (ONLY_STEP) console.log(`\x1b[33m[ONLY STEP: ${ONLY_STEP}]\x1b[0m`);
+
 // ============== TYPES ==============
+
+interface CheckCmd {
+    name: string;
+    cmd: string[];
+}
 
 interface Step {
     id: string;
@@ -23,6 +44,7 @@ interface Step {
     timeout_sec?: number;
     skip_when?: string | null;
     type?: string;
+    post_checks?: string;
 }
 
 interface Story {
@@ -53,7 +75,16 @@ interface PlanConfig {
         processed_folder: string;
         checkpoint_folder: string;
     };
+    checks: {
+        enabled: boolean;
+        bundles: Record<string, CheckCmd[]>;
+    };
+    autofix: {
+        enabled: boolean;
+        commands: CheckCmd[];
+    };
     steps: Step[];
+    fix_step: Step;
 }
 
 // ============== HELPERS ==============
@@ -66,6 +97,7 @@ const log = (msg: string) => console.log(`\x1b[36m[${new Date().toISOString().sl
 const logStep = (msg: string) => console.log(`\x1b[33m>>> ${msg}\x1b[0m`);
 const logOk = (msg: string) => console.log(`\x1b[32m✓ ${msg}\x1b[0m`);
 const logErr = (msg: string) => console.log(`\x1b[31m✗ ${msg}\x1b[0m`);
+const logCheck = (msg: string) => console.log(`\x1b[35m[CHECK] ${msg}\x1b[0m`);
 
 // ============== STORY ==============
 
@@ -112,10 +144,114 @@ function saveCheckpoint(cp: Checkpoint, plan: PlanConfig) {
     writeFileSync(resolve(dir, `${cp.story_id}.yaml`), stringifyYaml(cp));
 }
 
+// ============== CHECK BUNDLES ==============
+
+interface CheckResult {
+    name: string;
+    passed: boolean;
+    output: string;
+}
+
+function runCheckBundle(bundleName: string, plan: PlanConfig): { allPassed: boolean; results: CheckResult[] } {
+    if (SKIP_CHECKS) {
+        logCheck(`Skipping ${bundleName} (--skip-checks)`);
+        return { allPassed: true, results: [] };
+    }
+
+    if (!plan.checks.enabled) {
+        logCheck('Checks disabled in plan.yaml');
+        return { allPassed: true, results: [] };
+    }
+
+    const bundle = plan.checks.bundles[bundleName];
+    if (!bundle) {
+        logErr(`Check bundle '${bundleName}' not found`);
+        return { allPassed: false, results: [] };
+    }
+
+    logCheck(`Running ${bundleName} bundle (${bundle.length} checks)...`);
+
+    const results: CheckResult[] = [];
+
+    for (const check of bundle) {
+        const cmdStr = check.cmd.join(' ');
+        logCheck(`  ${check.name}: ${cmdStr}`);
+
+        if (DRY_RUN) {
+            results.push({ name: check.name, passed: true, output: '[dry-run]' });
+            continue;
+        }
+
+        try {
+            const output = execSync(cmdStr, {
+                encoding: 'utf-8',
+                timeout: 300000, // 5 min per check
+                stdio: ['pipe', 'pipe', 'pipe'],
+                shell: true,
+                cwd: process.cwd() // Run in current working directory
+            });
+
+            results.push({ name: check.name, passed: true, output });
+            logOk(`  ${check.name}: PASS`);
+
+        } catch (err: any) {
+            const output = (err.stdout || '') + (err.stderr || '');
+            results.push({ name: check.name, passed: false, output });
+            logErr(`  ${check.name}: FAIL`);
+            console.log('\x1b[90m' + output.slice(0, 500) + '\x1b[0m');
+        }
+    }
+
+    const allPassed = results.every(r => r.passed);
+    logCheck(`Bundle ${bundleName}: ${allPassed ? 'ALL PASS ✓' : 'SOME FAILED ✗'}`);
+
+    return { allPassed, results };
+}
+
+// ============== AUTOFIX ==============
+
+function runAutofix(plan: PlanConfig): boolean {
+    if (!plan.autofix.enabled) {
+        log('Autofix disabled');
+        return false;
+    }
+
+    logCheck('Running autofix...');
+    let anyFixed = false;
+
+    for (const fix of plan.autofix.commands) {
+        const cmdStr = fix.cmd.join(' ');
+        logCheck(`  ${fix.name}: ${cmdStr}`);
+
+        if (DRY_RUN) continue;
+
+        try {
+            execSync(cmdStr, {
+                encoding: 'utf-8',
+                timeout: 120000, // 2 min
+                stdio: ['pipe', 'pipe', 'pipe'],
+                shell: true,
+                cwd: process.cwd()
+            });
+            anyFixed = true;
+            logOk(`  ${fix.name}: done`);
+        } catch (err) {
+            logErr(`  ${fix.name}: failed`);
+        }
+    }
+
+    return anyFixed;
+}
+
 // ============== CLAUDE ==============
 
 function runClaude(prompt: string, timeoutSec: number): { ok: boolean; output: string; error?: string } {
-    // Zapisz prompt do pliku, aby uniknąć problemów z escaping
+    if (DRY_RUN) {
+        log('[DRY-RUN] Would execute Claude with prompt');
+        console.log('\x1b[90m' + prompt.slice(0, 200) + '...\x1b[0m');
+        return { ok: true, output: '[dry-run output]' };
+    }
+
     const promptFile = resolve(__dirname, '.prompt.tmp');
     writeFileSync(promptFile, prompt);
 
@@ -123,7 +259,6 @@ function runClaude(prompt: string, timeoutSec: number): { ok: boolean; output: s
     console.log('\x1b[90m--- output start ---\x1b[0m');
 
     try {
-        // Użyj pliku jako input przez cat/type (działa na Windows i Linux)
         const isWindows = process.platform === 'win32';
         const catCmd = isWindows ? 'type' : 'cat';
         const cmd = `${catCmd} "${promptFile}" | claude -p - --dangerously-skip-permissions`;
@@ -142,17 +277,11 @@ function runClaude(prompt: string, timeoutSec: number): { ok: boolean; output: s
 
     } catch (err: any) {
         const output = err.stdout || '';
-        const stderr = err.stderr || '';
-
         if (output) console.log(output);
         console.log('\x1b[90m--- output end ---\x1b[0m');
 
-        // Jeśli mamy sensowny output, uznaj za sukces
-        if (output.length > 50) {
-            return { ok: true, output };
-        }
-
-        return { ok: false, output, error: err.message || stderr };
+        if (output.length > 50) return { ok: true, output };
+        return { ok: false, output, error: err.message };
     }
 }
 
@@ -190,6 +319,37 @@ function runStep(step: Step, story: Story, plan: PlanConfig): boolean {
         checkpoint!.phases[step.id] = `✓ ${step.agent || 'agent'} ${time}`;
         saveCheckpoint(checkpoint!, plan);
         logOk(`${step.id} completed`);
+
+        // Run post_checks if defined
+        if (step.post_checks) {
+            console.log('');
+            const checkResult = runCheckBundle(step.post_checks, plan);
+
+            if (!checkResult.allPassed) {
+                // Try autofix
+                const fixed = runAutofix(plan);
+
+                if (fixed) {
+                    // Re-run checks
+                    const recheck = runCheckBundle(step.post_checks, plan);
+                    if (!recheck.allPassed) {
+                        // Still failing? Need pFix
+                        logErr('Checks still failing after autofix - would run pFix');
+                        checkpoint!.phases[step.id + '-check'] = `✗ ${time} needs-pfix`;
+                        saveCheckpoint(checkpoint!, plan);
+                        return false;
+                    }
+                } else {
+                    checkpoint!.phases[step.id + '-check'] = `✗ ${time} check-failed`;
+                    saveCheckpoint(checkpoint!, plan);
+                    return false;
+                }
+            }
+
+            checkpoint!.phases[step.id + '-check'] = `✓ ${time}`;
+            saveCheckpoint(checkpoint!, plan);
+        }
+
         return true;
     } else {
         checkpoint!.phases[step.id] = `✗ ${time} ${result.error}`;
@@ -217,15 +377,16 @@ function main() {
         return;
     }
 
-    // Ping test
-    log('Testing Claude CLI...');
-    const ping = runClaude('Say: OK', 120);
-    if (!ping.ok && ping.output.length < 10) {
-        logErr('Claude not responding');
-        logErr('Try: claude -p "test" --dangerously-skip-permissions');
-        process.exit(1);
+    // Ping test (skip in dry-run)
+    if (!DRY_RUN) {
+        log('Testing Claude CLI...');
+        const ping = runClaude('Say: OK', 120);
+        if (!ping.ok && ping.output.length < 10) {
+            logErr('Claude not responding');
+            process.exit(1);
+        }
+        logOk('Claude responding');
     }
-    logOk('Claude responding');
 
     // Process stories
     for (const story of stories) {
@@ -242,7 +403,12 @@ function main() {
 
         for (const step of plan.steps) {
             if (existsSync(resolve(__dirname, 'STOP'))) break;
+
+            // Skip check-only steps (handled by post_checks)
             if (step.type === 'check') continue;
+
+            // If --step flag, only run that step
+            if (ONLY_STEP && step.id !== ONLY_STEP) continue;
 
             const skip = shouldSkip(step, story);
             if (skip) {
