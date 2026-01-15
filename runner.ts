@@ -12,6 +12,8 @@
  *   --check=full    Uruchom tylko bundle 'full' (tsc + eslint + build)
  *   --check-all     Uruchom wszystkie bundles
  *   --autofix       Uruchom autofix (eslint --fix, prettier)
+ *   --setup         Sprawdź i zainstaluj brakujące dependencies
+ *   --help          Pokaż pomoc
  */
 
 import { execSync } from 'child_process';
@@ -28,10 +30,38 @@ const __dirname = dirname(__filename);
 const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run');
 const SKIP_CHECKS = args.includes('--skip-checks');
-const ONLY_STEP = args.find(a => a.startsWith('--step='))?.split('=')[1];
-const CHECK_BUNDLE = args.find(a => a.startsWith('--check='))?.split('=')[1];
+const ONLY_STEP = args.find((a: string) => a.startsWith('--step='))?.split('=')[1];
+const CHECK_BUNDLE = args.find((a: string) => a.startsWith('--check='))?.split('=')[1];
 const CHECK_ALL = args.includes('--check-all');
 const RUN_AUTOFIX = args.includes('--autofix');
+const RUN_SETUP = args.includes('--setup');
+const SHOW_HELP = args.includes('--help') || args.includes('-h');
+
+if (SHOW_HELP) {
+    console.log(`
+Claude Workflow Runner - Story Delivery
+
+Usage: npm start -- [flags]
+
+Flags:
+  --dry-run       Tylko loguj, nie wykonuj Claude
+  --skip-checks   Pomiń check bundles
+  --step=P3a      Uruchom tylko konkretny step
+  --check=quick   Uruchom bundle 'quick' (tsc)
+  --check=full    Uruchom bundle 'full' (tsc + eslint + build)
+  --check-all     Uruchom wszystkie bundles
+  --autofix       Uruchom autofix (eslint --fix, prettier)
+  --setup         Sprawdź i zainstaluj brakujące dependencies
+  --help, -h      Pokaż tę pomoc
+
+Examples:
+  npm start                      # Uruchom workflow
+  npm start -- --dry-run         # Test bez Claude
+  npm start -- --check=quick     # Tylko tsc
+  npm start -- --setup           # Zainstaluj dependencies
+`);
+    process.exit(0);
+}
 
 if (DRY_RUN) console.log('\x1b[33m[DRY-RUN MODE]\x1b[0m');
 if (SKIP_CHECKS) console.log('\x1b[33m[SKIP-CHECKS MODE]\x1b[0m');
@@ -39,6 +69,7 @@ if (ONLY_STEP) console.log(`\x1b[33m[ONLY STEP: ${ONLY_STEP}]\x1b[0m`);
 if (CHECK_BUNDLE) console.log(`\x1b[33m[CHECK MODE: ${CHECK_BUNDLE}]\x1b[0m`);
 if (CHECK_ALL) console.log('\x1b[33m[CHECK-ALL MODE]\x1b[0m');
 if (RUN_AUTOFIX) console.log('\x1b[33m[AUTOFIX MODE]\x1b[0m');
+if (RUN_SETUP) console.log('\x1b[33m[SETUP MODE]\x1b[0m');
 
 // ============== TYPES ==============
 
@@ -375,6 +406,66 @@ function main() {
 
     const plan = loadPlan();
     log(`Loaded ${plan.steps.length} steps`);
+
+    // ============== SETUP MODE ==============
+    // Check and install missing dependencies
+
+    if (RUN_SETUP) {
+        log('Checking dependencies...');
+
+        const requiredPkgs = ['typescript', 'eslint', 'prettier', '@eslint/js'];
+        const missingPkgs: string[] = [];
+
+        for (const pkg of requiredPkgs) {
+            try {
+                execSync(`pnpm list ${pkg}`, { encoding: 'utf-8', stdio: 'pipe' });
+                logOk(`  ${pkg}: installed`);
+            } catch {
+                logErr(`  ${pkg}: missing`);
+                missingPkgs.push(pkg);
+            }
+        }
+
+        // Check for node_modules
+        if (!existsSync(resolve(__dirname, 'node_modules'))) {
+            log('Installing node_modules...');
+            try {
+                execSync('pnpm install', { encoding: 'utf-8', stdio: 'inherit' });
+                logOk('node_modules installed');
+            } catch (err) {
+                logErr('Failed to install node_modules');
+            }
+        }
+
+        // Install missing
+        if (missingPkgs.length > 0) {
+            log(`Installing missing: ${missingPkgs.join(', ')}`);
+            try {
+                execSync(`pnpm add -D ${missingPkgs.join(' ')}`, { encoding: 'utf-8', stdio: 'inherit' });
+                logOk('Dependencies installed');
+            } catch (err) {
+                logErr('Failed to install some packages');
+            }
+        }
+
+        // Check for eslint config
+        if (!existsSync(resolve(__dirname, 'eslint.config.js'))) {
+            logErr('Missing eslint.config.js - create one for ESLint v9+');
+        } else {
+            logOk('eslint.config.js exists');
+        }
+
+        // Check for Claude CLI
+        try {
+            execSync('claude --version', { encoding: 'utf-8', stdio: 'pipe' });
+            logOk('Claude CLI available');
+        } catch {
+            logErr('Claude CLI not found - install from https://claude.ai/cli');
+        }
+
+        logOk('Setup complete');
+        return;
+    }
 
     // ============== CHECK-ONLY MODE ==============
     // If --check or --check-all or --autofix, run those and exit
