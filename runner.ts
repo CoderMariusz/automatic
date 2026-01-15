@@ -241,8 +241,9 @@ function runAutofix(plan: PlanConfig): boolean {
             });
             anyFixed = true;
             logOk(`  ${fix.name}: done`);
-        } catch (err) {
-            logErr(`  ${fix.name}: failed`);
+        } catch (err: any) {
+            const errMsg = err.stderr || err.message || 'Unknown error';
+            logErr(`  ${fix.name}: failed - ${errMsg.split('\n')[0]}`);
         }
     }
 
