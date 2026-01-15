@@ -1,0 +1,45 @@
+# Checkpoint Schema
+# Location: checkpoints/{STORY_ID}.yaml
+# Format: compact, parseable, ≤50 tokens per entry
+
+# ============================================================================
+# EXAMPLE: checkpoints/04.5.yaml
+# ============================================================================
+
+story_id: "04.5"
+epic: "04-production"
+type: "fullstack"  # backend | frontend | fullstack
+status: "in_progress"  # pending | in_progress | review | done | blocked
+
+phases:
+  P1: "✓ ux-designer 14:23 wireframes:3"
+  P2: "✓ test-writer 14:45 tests:12 files:3"
+  P3a: "✓ backend-dev 15:20 services:2 tests:8/8"
+  P3b: "✓ backend-dev 15:45 routes:3 tests:4/4"
+  P3c: "⏳ frontend-dev 16:00"
+  P3d: null
+  P4: null
+  P5: null
+  P6: null
+  P7: null
+
+# STATUS MARKERS:
+# ✓  = completed successfully
+# ✗  = failed (needs fix)
+# ⏳ = in progress
+# ⊘  = skipped (with reason)
+# null = not started
+
+# ENTRY FORMAT:
+# "{marker} {agent} {HH:MM} {key}:{value} {key}:{value}..."
+
+# FAILURE FORMAT:
+# "✗ code-reviewer 16:30 issues:3 decision:request_changes"
+
+# SKIP FORMAT:
+# "⊘ ux-designer reason:backend-only"
+
+# ============================================================================
+# DEPLOYMENT CONFIRMATION
+# ============================================================================
+# DEPLOY: "✓ 14-01-2026 11:38 status:DEPLOYED env:production"

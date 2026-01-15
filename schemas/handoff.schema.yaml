@@ -1,0 +1,75 @@
+# Handoff Schema
+# Between phases: ≤150 tokens
+# Between sessions: ≤300 tokens
+
+# ============================================================================
+# PHASE HANDOFF (agent → runner → next agent)
+# ============================================================================
+
+# FORMAT: Single YAML block, minimal
+handoff:
+  from: "P3a"
+  to: "P3b"
+  story: "04.5"
+  status: "success"  # success | blocked | partial
+  summary: "Services implemented: AuthService, UserService. Tests 8/8 pass."
+  files_changed:
+    - "src/services/auth.service.ts"
+    - "src/services/user.service.ts"
+  next_input:
+    - "Use services from src/services/"
+    - "Routes: /api/auth/*, /api/users/*"
+  blockers: null  # or list of issues
+
+# ============================================================================
+# SESSION HANDOFF (Claude session end → resume)
+# ============================================================================
+
+session_handoff:
+  story: "04.5"
+  phase: "P3c"
+  agent: "frontend-dev"
+  progress: "50%"
+  completed:
+    - "Header component"
+    - "Navigation component"
+  remaining:
+    - "Dashboard component"
+    - "Profile component"
+  context_files:
+    - "src/components/Header.tsx"
+    - "src/components/Navigation.tsx"
+  tests_status: "6/10 pass"
+  resume_instruction: "Continue with Dashboard component. Use Header pattern."
+
+# ============================================================================
+# BLOCKED HANDOFF
+# ============================================================================
+
+blocked_handoff:
+  story: "04.5"
+  phase: "P5"
+  agent: "code-reviewer"
+  status: "blocked"
+  reason: "Security issue in auth flow"
+  issues:
+    - id: 1
+      severity: "must_fix"
+      file: "src/services/auth.service.ts"
+      line: 45
+      issue: "Token not validated before use"
+    - id: 2
+      severity: "should_fix"
+      file: "src/routes/users.ts"
+      line: 23
+      issue: "Missing rate limiting"
+  action: "return_to_P3a"
+
+# ============================================================================
+# RULES
+# ============================================================================
+# 1. NO prose - only structured data
+# 2. File paths relative to project root
+# 3. Issues numbered for reference
+# 4. Status always explicit
+# 5. Timestamps in HH:MM format

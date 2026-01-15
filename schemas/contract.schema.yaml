@@ -1,0 +1,93 @@
+# Claude Response Contract
+# STRICT format for all Claude responses in runner
+
+# ============================================================================
+# RESPONSE STRUCTURE
+# ============================================================================
+
+# Every response MUST end with exactly ONE of:
+
+# SUCCESS:
+# ```
+# ===HANDOFF===
+# {handoff YAML}
+# ===NEXT_STEP_READY===
+# ```
+
+# BLOCKED:
+# ```
+# BLOCKED: {one-line reason}
+# ===HANDOFF===
+# {blocked_handoff YAML}
+# ```
+
+# SESSION END (context limit):
+# ```
+# ===SESSION_HANDOFF===
+# {session_handoff YAML}
+# ===PAUSE===
+# ```
+
+# ============================================================================
+# RULES FOR CLAUDE
+# ============================================================================
+
+rules:
+  files:
+    - "DO NOT create new files unless explicitly required by story"
+    - "UPDATE existing files - check first if file exists"
+    - "Follow project patterns - check similar files first"
+    - "Max 1 file per tool call when possible"
+  
+  tokens:
+    - "Handoff ≤150 tokens"
+    - "Session handoff ≤300 tokens"  
+    - "No prose explanations in handoffs"
+    - "Structured YAML only"
+  
+  checkpoints:
+    - "Update checkpoint after each phase"
+    - "Single line per phase"
+    - "Include timestamp HH:MM"
+    - "Include key metrics (files:N, tests:N/N)"
+  
+  errors:
+    - "BLOCKED immediately if cannot proceed"
+    - "Include specific issue and file"
+    - "Suggest action: return_to_P{N} or needs_input"
+  
+  implementation:
+    - "Follow TDD: tests first (P2), then code (P3)"
+    - "MINIMAL code to pass tests"
+    - "No gold-plating"
+    - "Run tests after each change"
+
+# ============================================================================
+# EXAMPLE VALID RESPONSE
+# ============================================================================
+
+example_success: |
+  [... implementation work ...]
+  
+  ===HANDOFF===
+  from: P3a
+  to: P3b
+  story: "04.5"
+  status: success
+  summary: "AuthService, UserService done. 8/8 tests pass."
+  files_changed:
+    - src/services/auth.service.ts
+    - src/services/user.service.ts
+  next_input:
+    - "Services ready in src/services/"
+  ===NEXT_STEP_READY===
+
+example_blocked: |
+  BLOCKED: Missing API spec for /api/payments endpoint
+  ===HANDOFF===
+  story: "04.5"
+  phase: P3b
+  status: blocked
+  reason: "API spec missing"
+  action: needs_input
+  question: "What should /api/payments return?"

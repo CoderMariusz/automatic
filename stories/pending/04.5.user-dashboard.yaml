@@ -1,0 +1,41 @@
+# Example Story: 04.5.user-dashboard
+
+epic: "04-production"
+type: "fullstack"  # backend | frontend | fullstack
+priority: P1
+complexity: M  # S | M | L
+status: pending
+
+## Description
+User can view their dashboard with stats and recent activity.
+
+## Acceptance Criteria
+
+### AC-1: Dashboard loads
+**Given** logged-in user
+**When** navigates to /dashboard
+**Then** sees dashboard with stats
+
+### AC-2: Stats displayed
+**Given** dashboard loaded
+**When** user views stats section
+**Then** sees: total items, recent activity count, notifications
+
+### AC-3: Loading state
+**Given** dashboard loading
+**When** data fetching
+**Then** shows skeleton loader
+
+### AC-4: Error handling
+**Given** API error
+**When** dashboard fails to load
+**Then** shows error message with retry button
+
+## Technical Notes
+- Use existing StatsCard component
+- API: GET /api/dashboard
+- Cache for 5 minutes
+
+## Dependencies
+- Auth system (story 04.1)
+- API structure (story 04.2a)

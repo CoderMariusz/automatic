@@ -1,0 +1,149 @@
+version: 1
+
+runner:
+  claude_cmd: ["claude"]
+  ready_marker: "===NEXT_STEP_READY==="
+  blocked_marker: "BLOCKED:"
+  pause_marker: "===PAUSE==="
+  handoff_marker: "===HANDOFF==="
+  session_handoff_marker: "===SESSION_HANDOFF==="
+  default_timeout_sec: 3600
+  max_retries_per_step: 2
+
+logging:
+  per_run_folder: true
+  save_raw_outputs: true
+  save_checks_outputs: true
+
+stop_control:
+  stop_file: "STOP"
+  stop_mode: "after_current_step"
+
+resume:
+  enabled: true
+  state_file: "state.json"
+
+stories:
+  input_folder: "stories/pending"
+  processed_folder: "stories/processed"
+  checkpoint_folder: "checkpoints"
+
+attachments:
+  default_mode: "selective"
+  max_chars_per_attachment: 6000
+  max_total_chars: 20000
+
+checks:
+  enabled: true
+  bundles:
+    quick:
+      - name: "tsc"
+        cmd: ["pnpm", "tsc", "--noEmit"]
+    full:
+      - name: "tsc"
+        cmd: ["pnpm", "tsc", "--noEmit"]
+      - name: "eslint"
+        cmd: ["pnpm", "eslint", "."]
+      - name: "next_build"
+        cmd: ["pnpm", "next", "build"]
+
+autofix:
+  enabled: true
+  commands:
+    - name: "eslint_fix"
+      cmd: ["pnpm", "eslint", ".", "--fix"]
+    - name: "prettier_write"
+      cmd: ["pnpm", "prettier", ".", "--write"]
+
+# ============================================================================
+# STORY DELIVERY PHASES
+# ============================================================================
+# Based on TDD: RED (P2) → GREEN (P3) → REFACTOR (P4)
+# With quality gates: Review (P5) → QA (P6) → Docs (P7)
+
+steps:
+  # --- P1: UX Design (optional - skip for backend-only) ---
+  - id: P1
+    file: "instructions/P1-ux-design.md"
+    agent: "ux-designer"
+    skip_when: "backend-only"
+    timeout_sec: 3600
+
+  # --- P2: RED - Write failing tests first ---
+  - id: P2
+    file: "instructions/P2-tests-red.md"
+    agent: "test-writer"
+    skip_when: null  # never skip
+    timeout_sec: 3600
+
+  # --- P3: GREEN - Implementation (parallel sub-phases) ---
+  - id: P3a
+    file: "instructions/P3a-backend-services.md"
+    agent: "backend-dev"
+    skip_when: "frontend-only"
+    parallel_group: "P3"
+    timeout_sec: 3600
+
+  - id: P3b
+    file: "instructions/P3b-backend-routes.md"
+    agent: "backend-dev"
+    skip_when: "frontend-only"
+    parallel_group: "P3"
+    depends_on: ["P3a"]
+    timeout_sec: 3600
+
+  - id: P3c
+    file: "instructions/P3c-frontend-components.md"
+    agent: "frontend-dev"
+    skip_when: "backend-only"
+    parallel_group: "P3"
+    timeout_sec: 3600
+
+  - id: P3d
+    file: "instructions/P3d-frontend-pages.md"
+    agent: "frontend-dev"
+    skip_when: "backend-only"
+    parallel_group: "P3"
+    depends_on: ["P3c"]
+    timeout_sec: 3600
+
+  # --- P3 CHECK: Run tests after implementation ---
+  - id: P3-check
+    type: "check"
+    post_checks: "quick"
+
+  # --- P4: REFACTOR ---
+  - id: P4
+    file: "instructions/P4-refactor.md"
+    agent: "senior-dev"
+    skip_when: "clean-code"  # skip if no refactoring needed
+    timeout_sec: 3600
+
+  # --- P5: Code Review ---
+  - id: P5
+    file: "instructions/P5-code-review.md"
+    agent: "code-reviewer"
+    skip_when: null  # never skip
+    on_fail: "return_to_P4"
+    timeout_sec: 3600
+
+  # --- P6: QA Validation ---
+  - id: P6
+    file: "instructions/P6-qa.md"
+    agent: "qa-agent"
+    skip_when: null  # never skip
+    on_fail: "return_to_P3"
+    timeout_sec: 3600
+    post_checks: "full"
+
+  # --- P7: Documentation ---
+  - id: P7
+    file: "instructions/P7-docs.md"
+    agent: "tech-writer"
+    skip_when: null  # never skip
+    timeout_sec: 1800
+
+fix_step:
+  id: pFix
+  file: "instructions/pFix.md"
+  timeout_sec: 3600

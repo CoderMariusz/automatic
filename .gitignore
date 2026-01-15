@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Logs
+logs/
+*.log
+
+# Runtime
+dist/
+*.js
+*.d.ts
+*.js.map
+
+# State files (keep structure, ignore content)
+state.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
