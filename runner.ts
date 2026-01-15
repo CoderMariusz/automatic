@@ -195,10 +195,8 @@ function runCheckBundle(bundleName: string, plan: PlanConfig): { allPassed: bool
         try {
             const output = execSync(cmdStr, {
                 encoding: 'utf-8',
-                timeout: 300000, // 5 min per check
-                stdio: ['pipe', 'pipe', 'pipe'],
-                shell: true,
-                cwd: process.cwd() // Run in current working directory
+                timeout: 300000,
+                cwd: process.cwd()
             });
 
             results.push({ name: check.name, passed: true, output });
@@ -238,9 +236,7 @@ function runAutofix(plan: PlanConfig): boolean {
         try {
             execSync(cmdStr, {
                 encoding: 'utf-8',
-                timeout: 120000, // 2 min
-                stdio: ['pipe', 'pipe', 'pipe'],
-                shell: true,
+                timeout: 120000,
                 cwd: process.cwd()
             });
             anyFixed = true;
