@@ -5,9 +5,13 @@
  * Używa execSync (synchroniczne) - bardziej niezawodne.
  * 
  * Flagi:
- *   --dry-run     Tylko loguj, nie wykonuj Claude
- *   --skip-checks Pomiń check bundles
- *   --step=P3a    Uruchom tylko konkretny step
+ *   --dry-run       Tylko loguj, nie wykonuj Claude
+ *   --skip-checks   Pomiń check bundles
+ *   --step=P3a      Uruchom tylko konkretny step
+ *   --check=quick   Uruchom tylko bundle 'quick' (tsc)
+ *   --check=full    Uruchom tylko bundle 'full' (tsc + eslint + build)
+ *   --check-all     Uruchom wszystkie bundles
+ *   --autofix       Uruchom autofix (eslint --fix, prettier)
  */
 
 import { execSync } from 'child_process';
@@ -25,10 +29,16 @@ const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run');
 const SKIP_CHECKS = args.includes('--skip-checks');
 const ONLY_STEP = args.find(a => a.startsWith('--step='))?.split('=')[1];
+const CHECK_BUNDLE = args.find(a => a.startsWith('--check='))?.split('=')[1];
+const CHECK_ALL = args.includes('--check-all');
+const RUN_AUTOFIX = args.includes('--autofix');
 
 if (DRY_RUN) console.log('\x1b[33m[DRY-RUN MODE]\x1b[0m');
 if (SKIP_CHECKS) console.log('\x1b[33m[SKIP-CHECKS MODE]\x1b[0m');
 if (ONLY_STEP) console.log(`\x1b[33m[ONLY STEP: ${ONLY_STEP}]\x1b[0m`);
+if (CHECK_BUNDLE) console.log(`\x1b[33m[CHECK MODE: ${CHECK_BUNDLE}]\x1b[0m`);
+if (CHECK_ALL) console.log('\x1b[33m[CHECK-ALL MODE]\x1b[0m');
+if (RUN_AUTOFIX) console.log('\x1b[33m[AUTOFIX MODE]\x1b[0m');
 
 // ============== TYPES ==============
 
@@ -368,6 +378,44 @@ function main() {
 
     const plan = loadPlan();
     log(`Loaded ${plan.steps.length} steps`);
+
+    // ============== CHECK-ONLY MODE ==============
+    // If --check or --check-all or --autofix, run those and exit
+
+    if (RUN_AUTOFIX) {
+        runAutofix(plan);
+        logOk('Autofix complete');
+        return;
+    }
+
+    if (CHECK_BUNDLE) {
+        const result = runCheckBundle(CHECK_BUNDLE, plan);
+        if (result.allPassed) {
+            logOk(`Bundle ${CHECK_BUNDLE}: ALL PASS`);
+        } else {
+            logErr(`Bundle ${CHECK_BUNDLE}: FAILED`);
+            process.exit(1);
+        }
+        return;
+    }
+
+    if (CHECK_ALL) {
+        log('Running all check bundles...');
+        let allOk = true;
+        for (const bundleName of Object.keys(plan.checks.bundles)) {
+            const result = runCheckBundle(bundleName, plan);
+            if (!result.allPassed) allOk = false;
+        }
+        if (allOk) {
+            logOk('All bundles passed');
+        } else {
+            logErr('Some bundles failed');
+            process.exit(1);
+        }
+        return;
+    }
+
+    // ============== NORMAL WORKFLOW ==============
 
     const stories = loadStories(plan);
     log(`Found ${stories.length} pending stories`);
