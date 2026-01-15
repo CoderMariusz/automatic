@@ -281,6 +281,36 @@ function runAutofix(plan: PlanConfig): boolean {
     return anyFixed;
 }
 
+// ============== PFIX - AI ERROR REPAIR ==============
+
+function runPFix(errors: string, plan: PlanConfig): boolean {
+    logCheck('Running pFix - AI Error Repair...');
+
+    // Load pFix instruction
+    const pFixPath = resolve(__dirname, plan.fix_step.file);
+    if (!existsSync(pFixPath)) {
+        logErr(`pFix instruction not found: ${pFixPath}`);
+        return false;
+    }
+
+    let instruction = readFileSync(pFixPath, 'utf-8');
+
+    // Append errors
+    instruction += `\n\n## LINT ERRORS TO FIX\n\`\`\`\n${errors}\n\`\`\``;
+    instruction += `\n\n## CONTRACT\nFix all errors. When done, end with: ===NEXT_STEP_READY===`;
+
+    const timeout = plan.fix_step.timeout_sec || 7200; // 2h default for pFix
+    const result = runClaude(instruction, timeout);
+
+    if (result.ok) {
+        logOk('pFix completed');
+        return true;
+    } else {
+        logErr(`pFix failed: ${result.error}`);
+        return false;
+    }
+}
+
 // ============== CLAUDE ==============
 
 function runClaude(prompt: string, timeoutSec: number): { ok: boolean; output: string; error?: string } {
@@ -364,23 +394,49 @@ function runStep(step: Step, story: Story, plan: PlanConfig): boolean {
             const checkResult = runCheckBundle(step.post_checks, plan);
 
             if (!checkResult.allPassed) {
-                // Try autofix
+                // Try autofix first
                 const fixed = runAutofix(plan);
 
                 if (fixed) {
                     // Re-run checks
                     const recheck = runCheckBundle(step.post_checks, plan);
                     if (!recheck.allPassed) {
-                        // Still failing? Need pFix
-                        logErr('Checks still failing after autofix - would run pFix');
-                        checkpoint!.phases[step.id + '-check'] = `✗ ${time} needs-pfix`;
+                        // Still failing? Run pFix with error output
+                        const errorOutput = recheck.results
+                            .filter(r => !r.passed)
+                            .map(r => `=== ${r.name} ===\n${r.output}`)
+                            .join('\n\n');
+
+                        const pFixOk = runPFix(errorOutput, plan);
+
+                        if (pFixOk) {
+                            // Re-run checks after pFix
+                            const finalCheck = runCheckBundle(step.post_checks, plan);
+                            if (!finalCheck.allPassed) {
+                                checkpoint!.phases[step.id + '-check'] = `✗ ${time} pfix-failed`;
+                                saveCheckpoint(checkpoint!, plan);
+                                return false;
+                            }
+                        } else {
+                            checkpoint!.phases[step.id + '-check'] = `✗ ${time} pfix-error`;
+                            saveCheckpoint(checkpoint!, plan);
+                            return false;
+                        }
+                    }
+                } else {
+                    // No autofix available, try pFix directly
+                    const errorOutput = checkResult.results
+                        .filter(r => !r.passed)
+                        .map(r => `=== ${r.name} ===\n${r.output}`)
+                        .join('\n\n');
+
+                    const pFixOk = runPFix(errorOutput, plan);
+
+                    if (!pFixOk) {
+                        checkpoint!.phases[step.id + '-check'] = `✗ ${time} check-failed`;
                         saveCheckpoint(checkpoint!, plan);
                         return false;
                     }
-                } else {
-                    checkpoint!.phases[step.id + '-check'] = `✗ ${time} check-failed`;
-                    saveCheckpoint(checkpoint!, plan);
-                    return false;
                 }
             }
 
