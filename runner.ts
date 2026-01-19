@@ -22,129 +22,90 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { resolve, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { promisify } from 'util';
+import { createProvider } from './providers/provider-factory.js';
+import type { ProviderType } from './providers/base-provider.js';
+import type { LogFunction } from './types.js';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
-
-// ... existing code ...
-
-// ============== CLAUDE ==============
-
-async function runClaudeAsync(prompt: string, timeoutSec: number, stepId: string): Promise<{ ok: boolean; output: string; error?: string }> {
-    if (DRY_RUN) {
-        log(`[DRY-RUN] [${stepId}] Would execute Claude with prompt`);
-        console.log('\x1b[90m' + prompt.slice(0, 200) + '...\x1b[0m');
-        return { ok: true, output: '[dry-run output]' };
-    }
-
-    if (MOCK_MODE) {
-        log(`[MOCK] [${stepId}] Simulating Claude (2s delay)...`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        return { ok: true, output: '===NEXT_STEP_READY===\nMock successful.' };
-    }
-
-    const simpleId = new Date().toISOString().slice(11, 19).replace(/:/g, '');
-    const safeStepId = stepId.replace(/[^a-zA-Z0-9-]/g, '_');
-    const promptFile = resolve(__dirname, `.prompt.${safeStepId}.tmp`);
-    writeFileSync(promptFile, prompt);
-
-    // Save raw input
-    if (existsSync(RAW_LOG_DIR)) {
-        writeFileSync(resolve(RAW_LOG_DIR, `${simpleId}_${safeStepId}_input.md`), prompt);
-    }
-
-    log(`[${stepId}] Executing Claude (timeout: ${timeoutSec}s)...`);
-
-    let output = '';
-    let success = false;
-    let errorMsg: string | undefined;
-
-    try {
-        const isWindows = process.platform === 'win32';
-        const catCmd = isWindows ? 'type' : 'cat';
-        const cmd = `${catCmd} "${promptFile}" | claude -p - --dangerously-skip-permissions`;
-
-        const result = await execAsync(cmd, {
-            timeout: timeoutSec * 1000,
-            encoding: 'utf-8',
-            maxBuffer: 50 * 1024 * 1024
-        });
-
-        output = result.stdout;
-        success = true;
-
-    } catch (err: any) {
-        output = err.stdout || '';
-        errorMsg = err.message;
-        success = output.length > 50;
-    }
-
-    // Save raw output
-    if (existsSync(RAW_LOG_DIR)) {
-        writeFileSync(resolve(RAW_LOG_DIR, `${simpleId}_${safeStepId}_${success ? 'ok' : 'fail'}.md`), output + (errorMsg ? `\n\nERROR: ${errorMsg}` : ''));
-    }
-
-    return { ok: success, output, error: errorMsg };
-}
-
-async function runGLMAsync(prompt: string, timeoutSec: number, stepId: string): Promise<{ ok: boolean; output: string; error?: string }> {
-    if (DRY_RUN) {
-        log(`[DRY-RUN] [${stepId}] Would execute GLM with prompt`);
-        console.log('\x1b[90m' + prompt.slice(0, 200) + '...\x1b[0m');
-        return { ok: true, output: '[dry-run output]' };
-    }
-
-    if (MOCK_MODE) {
-        log(`[MOCK] [${stepId}] Simulating GLM (2s delay)...`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        return { ok: true, output: '===NEXT_STEP_READY===\nMock successful.' };
-    }
-
-    const simpleId = new Date().toISOString().slice(11, 19).replace(/:/g, '');
-    const safeStepId = stepId.replace(/[^a-zA-Z0-9-]/g, '_');
-    const promptFile = resolve(__dirname, `.prompt.${safeStepId}.tmp`);
-    writeFileSync(promptFile, prompt);
-
-    // Save raw input
-    if (existsSync(RAW_LOG_DIR)) {
-        writeFileSync(resolve(RAW_LOG_DIR, `${simpleId}_${safeStepId}_input.md`), prompt);
-    }
-
-    log(`[${stepId}] Executing GLM (timeout: ${timeoutSec}s)...`);
-
-    let output = '';
-    let success = false;
-    let errorMsg: string | undefined;
-
-    try {
-        const isWindows = process.platform === 'win32';
-        const catCmd = isWindows ? 'type' : 'cat';
-        const glmWrapper = resolve(__dirname, '.experiments/claude-glm-test/scripts/glm_cli.py');
-        const cmd = `${catCmd} "${promptFile}" | python "${glmWrapper}"`;
-
-        const result = await execAsync(cmd, {
-            timeout: timeoutSec * 1000,
-            encoding: 'utf-8',
-            maxBuffer: 50 * 1024 * 1024
-        });
-
-        output = result.stdout;
-        success = true;
-
-    } catch (err: any) {
-        output = err.stdout || '';
-        errorMsg = err.message;
-        success = output.length > 50;
-    }
-
-    // Save raw output
-    if (existsSync(RAW_LOG_DIR)) {
-        writeFileSync(resolve(RAW_LOG_DIR, `${simpleId}_${safeStepId}_${success ? 'ok' : 'fail'}.md`), output + (errorMsg ? `\n\nERROR: ${errorMsg}` : ''));
-    }
-
-    return { ok: success, output, error: errorMsg };
-}
 const __dirname = dirname(__filename);
+
+// ============== AUTO-LOAD .env.local ==============
+function loadEnvFile() {
+    const envFiles = ['.env.local', '.env'];
+    for (const envFile of envFiles) {
+        const envPath = resolve(__dirname, envFile);
+        if (existsSync(envPath)) {
+            const content = readFileSync(envPath, 'utf-8');
+            for (const line of content.split('\n')) {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith('#')) continue;
+                const eqIndex = trimmed.indexOf('=');
+                if (eqIndex > 0) {
+                    const key = trimmed.slice(0, eqIndex).trim();
+                    let value = trimmed.slice(eqIndex + 1).trim();
+                    // Remove quotes if present
+                    if ((value.startsWith('"') && value.endsWith('"')) ||
+                        (value.startsWith("'") && value.endsWith("'"))) {
+                        value = value.slice(1, -1);
+                    }
+                    // Always override with .env.local values (file has priority)
+                    process.env[key] = value;
+                }
+            }
+            console.log(`\x1b[36m[ENV] Loaded ${envFile}\x1b[0m`);
+            break;
+        }
+    }
+}
+loadEnvFile();
+
+// ============== PROVIDER MANAGEMENT ==============
+
+/**
+ * Get provider type for a specific step
+ * Priority: step.provider > plan.providers[stepId] > default 'claude'
+ */
+function getProviderForStep(step: Step, plan: PlanConfig): ProviderType {
+    // Check for step-level override
+    if (step.provider) {
+        return step.provider;
+    }
+
+    // Check for plan-level mapping
+    if (plan.providers && plan.providers[step.id]) {
+        return plan.providers[step.id];
+    }
+
+    // Default to claude
+    return 'claude';
+}
+
+/**
+ * Execute LLM request using appropriate provider
+ */
+async function runLLMAsync(
+    prompt: string,
+    timeoutSec: number,
+    stepId: string,
+    providerType: ProviderType
+): Promise<{ ok: boolean; output: string; error?: string }> {
+    const provider = createProvider(
+        providerType,
+        log,
+        logErr,
+        DRY_RUN,
+        MOCK_MODE,
+        RAW_LOG_DIR
+    );
+
+    return await provider.execute(prompt, timeoutSec, stepId);
+}
+
+// Legacy function for backward compatibility (now uses provider system)
+async function runClaudeAsync(prompt: string, timeoutSec: number, stepId: string): Promise<{ ok: boolean; output: string; error?: string }> {
+    return runLLMAsync(prompt, timeoutSec, stepId, 'claude');
+}
 
 // ============== CLI FLAGS ==============
 
@@ -238,6 +199,7 @@ interface Step {
     post_checks?: string;
     parallel_group?: string;
     depends_on?: string[];
+    provider?: ProviderType;  // Optional per-step provider override
 }
 
 interface Story {
@@ -278,6 +240,8 @@ interface PlanConfig {
     };
     steps: Step[];
     fix_step: Step;
+    // Provider mapping per step (defaults)
+    providers?: Record<string, ProviderType>;
 }
 
 // ============== LOGGING ==============
@@ -480,7 +444,7 @@ function runAutofix(plan: PlanConfig): boolean {
 
 // ============== PFIX - AI ERROR REPAIR ==============
 
-function runPFix(errors: string, plan: PlanConfig): boolean {
+async function runPFix(errors: string, plan: PlanConfig): Promise<boolean> {
     logCheck('Running pFix - AI Error Repair...');
 
     // Load pFix instruction
@@ -497,7 +461,10 @@ function runPFix(errors: string, plan: PlanConfig): boolean {
     instruction += `\n\n## CONTRACT\nFix all errors. When done, end with: ===NEXT_STEP_READY===`;
 
     const timeout = plan.fix_step.timeout_sec || 7200; // 2h default for pFix
-    const result = runClaude(instruction, timeout);
+    // pFix uses claude by default, but can be overridden via step.provider
+    const providerType = getProviderForStep(plan.fix_step, plan);
+    const provider = createProvider(providerType, log, logErr, DRY_RUN, MOCK_MODE, RAW_LOG_DIR);
+    const result = await provider.execute(instruction, timeout, plan.fix_step.id);
 
     if (result.ok) {
         logOk('pFix completed');
@@ -508,61 +475,8 @@ function runPFix(errors: string, plan: PlanConfig): boolean {
     }
 }
 
-// ============== CLAUDE ==============
-
-function runClaude(prompt: string, timeoutSec: number): { ok: boolean; output: string; error?: string } {
-    if (DRY_RUN) {
-        log('[DRY-RUN] Would execute Claude with prompt');
-        console.log('\x1b[90m' + prompt.slice(0, 200) + '...\x1b[0m');
-        return { ok: true, output: '[dry-run output]' };
-    }
-
-    const simpleId = new Date().toISOString().slice(11, 19).replace(/:/g, '');
-    const promptFile = resolve(__dirname, '.prompt.tmp');
-    writeFileSync(promptFile, prompt);
-
-    // Save raw input
-    if (existsSync(RAW_LOG_DIR)) {
-        writeFileSync(resolve(RAW_LOG_DIR, `${simpleId}_input.md`), prompt);
-    }
-
-    log(`Executing Claude (timeout: ${timeoutSec}s)...`);
-    console.log('\x1b[90m--- output start ---\x1b[0m');
-
-    let output = '';
-    let success = false;
-    let errorMsg: string | undefined;
-
-    try {
-        const isWindows = process.platform === 'win32';
-        const catCmd = isWindows ? 'type' : 'cat';
-        const cmd = `${catCmd} "${promptFile}" | claude -p - --dangerously-skip-permissions`;
-
-        output = execSync(cmd, {
-            timeout: timeoutSec * 1000,
-            encoding: 'utf-8',
-            maxBuffer: 50 * 1024 * 1024,
-            stdio: ['pipe', 'pipe', 'pipe'],
-            shell: true
-        });
-        success = true;
-
-    } catch (err: any) {
-        output = err.stdout || '';
-        errorMsg = err.message;
-        success = output.length > 50; // Consider partial success if some output
-    }
-
-    console.log(output);
-    console.log('\x1b[90m--- output end ---\x1b[0m');
-
-    // Save raw output
-    if (existsSync(RAW_LOG_DIR)) {
-        writeFileSync(resolve(RAW_LOG_DIR, `${simpleId}_${success ? 'ok' : 'fail'}.md`), output + (errorMsg ? `\n\nERROR: ${errorMsg}` : ''));
-    }
-
-    return { ok: success, output, error: errorMsg };
-}
+// Legacy synchronous runClaude removed - now using async providers
+// If needed, use runLLMAsync or provider.execute() directly
 
 // ============== STEPS ==============
 
@@ -650,7 +564,8 @@ function loadInstruction(step: Step, story: Story): string {
 
 async function runStepAsync(step: Step, story: Story, plan: PlanConfig): Promise<boolean> {
     console.log('');
-    logStep(`${step.id} | ${step.agent || 'agent'}`);
+    const providerType = getProviderForStep(step, plan);
+    logStep(`${step.id} | ${step.agent || 'agent'} [${providerType}]`);
 
     const instruction = loadInstruction(step, story);
     const timeout = step.timeout_sec || plan.runner.default_timeout_sec;
@@ -659,7 +574,7 @@ async function runStepAsync(step: Step, story: Story, plan: PlanConfig): Promise
     if (step.agent?.toLowerCase().includes('glm')) {
         result = await runGLMAsync(instruction, timeout, step.id);
     } else {
-        result = await runClaudeAsync(instruction, timeout, step.id);
+        result = await runLLMAsync(instruction, timeout, step.id, providerType);
     }
 
     const time = new Date().toISOString().slice(11, 16);
@@ -688,7 +603,7 @@ async function runStepAsync(step: Step, story: Story, plan: PlanConfig): Promise
                             .map(r => `=== ${r.name} ===\n${r.output}`)
                             .join('\n\n');
 
-                        const pFixOk = runPFix(errorOutput, plan);
+                        const pFixOk = await runPFix(errorOutput, plan);
 
                         if (pFixOk) {
                             // Re-run checks after pFix
@@ -912,6 +827,9 @@ async function main() {
         log('No stories in stories/pending/');
         return;
     }
+
+    // Setup logging before any provider usage
+    setupLogging();
 
     // Ping test (skip in dry-run)
     if (!DRY_RUN) {

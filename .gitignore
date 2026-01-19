@@ -14,6 +14,13 @@ dist/
 # State files (keep structure, ignore content)
 state.json
 
+# Environment files with secrets
+.env.local
+.env
+
+# Temporary files
+.prompt.*.tmp
+
 # OS
 .DS_Store
 Thumbs.db
