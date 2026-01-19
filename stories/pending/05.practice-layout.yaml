@@ -1,0 +1,40 @@
+story_id: "05.practice-layout"
+epic: "theory-pass-dashboard"
+type: "frontend"
+priority: "P1"
+complexity: "M"
+status: "pending"
+
+description: |
+  Implement the overall layout and static elements of the "Practice" page as shown in the provided image. 
+  This includes the sidebar navigation, top breadcrumbs, and main section headers.
+
+acceptance_criteria:
+  - id: AC-1
+    title: Sidebar Navigation
+    given: the application is running
+    when: the user views the page
+    then: "the sidebar is visible on the left containing: Theory Pass logo, role selector (ADI), and links (Overview, Mock Tests, Topics, Mistakes, Hazard Perception, The Highway Code, Know your traffic signs, Pricing, Contact Us, Special Offers, Dark Mode toggle)."
+  
+  - id: AC-2
+    title: Breadcrumbs and Titles
+    given: the page is loaded
+    when: the user looks at the main content area
+    then: "the breadcrumb 'Home > Practice > ADI' is visible and headers 'Practice' and 'Study Materials' are correctly displayed with appropriate typography."
+
+  - id: AC-3
+    title: Visual Consistency
+    given: a design reference (image)
+    when: implementing the UI
+    then: "the colors, icons, and spacing should closely match the reference image (e.g., shades of purple for the active 'Overview' link and buttons)."
+
+  - id: AC-4
+    title: Responsive Skeleton
+    given: different screen sizes
+    when: resizing the browser
+    then: the layout should adjust properly, potentially collapsing the sidebar on mobile devices.
+
+technical_notes:
+  - Use semantic HTML for the sidebar and main area.
+  - Implement basic CSS layout using Flexbox or Grid.
+  - Icons can be placeholders or standard icon library (e.g., Lucide, FontAwesome) if available.

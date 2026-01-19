@@ -54,7 +54,6 @@ async function runClaudeAsync(prompt: string, timeoutSec: number, stepId: string
     }
 
     log(`[${stepId}] Executing Claude (timeout: ${timeoutSec}s)...`);
-    // console.log('\x1b[90m--- output start ---\x1b[0m'); // Disabled real-time log in parallel mode to avoid interleaved garbage
 
     let output = '';
     let success = false;
@@ -68,8 +67,7 @@ async function runClaudeAsync(prompt: string, timeoutSec: number, stepId: string
         const result = await execAsync(cmd, {
             timeout: timeoutSec * 1000,
             encoding: 'utf-8',
-            maxBuffer: 50 * 1024 * 1024,
-            shell: undefined // Use default shell
+            maxBuffer: 50 * 1024 * 1024
         });
 
         output = result.stdout;
@@ -78,11 +76,66 @@ async function runClaudeAsync(prompt: string, timeoutSec: number, stepId: string
     } catch (err: any) {
         output = err.stdout || '';
         errorMsg = err.message;
-        success = output.length > 50; // Consider partial success if some output
+        success = output.length > 50;
     }
 
-    // console.log(output); // Log output at end
-    // console.log('\x1b[90m--- output end ---\x1b[0m');
+    // Save raw output
+    if (existsSync(RAW_LOG_DIR)) {
+        writeFileSync(resolve(RAW_LOG_DIR, `${simpleId}_${safeStepId}_${success ? 'ok' : 'fail'}.md`), output + (errorMsg ? `\n\nERROR: ${errorMsg}` : ''));
+    }
+
+    return { ok: success, output, error: errorMsg };
+}
+
+async function runGLMAsync(prompt: string, timeoutSec: number, stepId: string): Promise<{ ok: boolean; output: string; error?: string }> {
+    if (DRY_RUN) {
+        log(`[DRY-RUN] [${stepId}] Would execute GLM with prompt`);
+        console.log('\x1b[90m' + prompt.slice(0, 200) + '...\x1b[0m');
+        return { ok: true, output: '[dry-run output]' };
+    }
+
+    if (MOCK_MODE) {
+        log(`[MOCK] [${stepId}] Simulating GLM (2s delay)...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        return { ok: true, output: '===NEXT_STEP_READY===\nMock successful.' };
+    }
+
+    const simpleId = new Date().toISOString().slice(11, 19).replace(/:/g, '');
+    const safeStepId = stepId.replace(/[^a-zA-Z0-9-]/g, '_');
+    const promptFile = resolve(__dirname, `.prompt.${safeStepId}.tmp`);
+    writeFileSync(promptFile, prompt);
+
+    // Save raw input
+    if (existsSync(RAW_LOG_DIR)) {
+        writeFileSync(resolve(RAW_LOG_DIR, `${simpleId}_${safeStepId}_input.md`), prompt);
+    }
+
+    log(`[${stepId}] Executing GLM (timeout: ${timeoutSec}s)...`);
+
+    let output = '';
+    let success = false;
+    let errorMsg: string | undefined;
+
+    try {
+        const isWindows = process.platform === 'win32';
+        const catCmd = isWindows ? 'type' : 'cat';
+        const glmWrapper = resolve(__dirname, '.experiments/claude-glm-test/scripts/glm_cli.py');
+        const cmd = `${catCmd} "${promptFile}" | python "${glmWrapper}"`;
+
+        const result = await execAsync(cmd, {
+            timeout: timeoutSec * 1000,
+            encoding: 'utf-8',
+            maxBuffer: 50 * 1024 * 1024
+        });
+
+        output = result.stdout;
+        success = true;
+
+    } catch (err: any) {
+        output = err.stdout || '';
+        errorMsg = err.message;
+        success = output.length > 50;
+    }
 
     // Save raw output
     if (existsSync(RAW_LOG_DIR)) {
@@ -601,7 +654,13 @@ async function runStepAsync(step: Step, story: Story, plan: PlanConfig): Promise
 
     const instruction = loadInstruction(step, story);
     const timeout = step.timeout_sec || plan.runner.default_timeout_sec;
-    const result = await runClaudeAsync(instruction, timeout, step.id);
+
+    let result;
+    if (step.agent?.toLowerCase().includes('glm')) {
+        result = await runGLMAsync(instruction, timeout, step.id);
+    } else {
+        result = await runClaudeAsync(instruction, timeout, step.id);
+    }
 
     const time = new Date().toISOString().slice(11, 16);
 
