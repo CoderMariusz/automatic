@@ -652,8 +652,11 @@ async function main() {
     await runner.run(prdPath);
 }
 
-// Run if called directly
-if (require.main === module) {
+// Run if called directly (ESM compatible)
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+
+if (process.argv[1] === __filename || process.argv[1]?.endsWith('flow2-runner.ts')) {
     main().catch(error => {
         console.error('Fatal error:', error);
         process.exit(1);
