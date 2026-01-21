@@ -152,13 +152,19 @@ class Flow2Runner {
         const configContent = fs.readFileSync(configPath, 'utf-8');
         this.config = yaml.parse(configContent) as Flow2Config;
 
-        // Create provider
-        this.provider = createProvider('claude');
-
-        // Setup logging
+        // Setup logging first (needed for provider)
         this.runId = new Date().toISOString().replace(/[:.]/g, '-');
         this.logDir = path.join(this.config.logging.output_dir, this.runId);
         fs.mkdirSync(this.logDir, { recursive: true });
+
+        // Create log functions for provider
+        const logFn = (msg: string) => this.log(msg, 'info');
+        const logErrFn = (msg: string) => this.log(msg, 'error');
+        const rawLogDir = path.join(this.logDir, 'raw');
+        fs.mkdirSync(rawLogDir, { recursive: true });
+
+        // Create provider with all required params
+        this.provider = createProvider('claude', logFn, logErrFn, false, false, rawLogDir);
 
         this.log('Flow 2 Runner initialized', 'info');
     }
