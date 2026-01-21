@@ -1,0 +1,10 @@
+# approval.yaml - TestApp
+timestamp: "2026-01-21T15:00:00Z"
+decision: "approved"
+validation_score: 100
+validation_status: "VALID"
+
+approved:
+  by: "user"
+  at: "2026-01-21T15:00:00Z"
+  proceed_to_epic_flow: true
