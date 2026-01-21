@@ -1,0 +1,184 @@
+story_id: "13.prd-research-instructions"
+epic: "prd-flow"
+type: "backend"
+priority: "P0"
+complexity: "XL"
+status: "pending"
+
+description: |
+  Stworzenie 4 instrukcji dla research agentów (R1-R4).
+
+  Każdy agent to LLM non-interactive który:
+  - Czyta discovery.yaml i research-config.yaml
+  - Generuje raport max 3000 tokenów
+  - Bazuje TYLKO na MVP features z discovery
+  - Jeśli web_search=true, używa Claude web search
+  - Kończy z ===RESEARCH_COMPLETE=== i ===NEXT_STEP_READY===
+
+  Agenty:
+  - R1: Tech Research - analiza stack technologiczny
+  - R2: Competition Research - analiza konkurencji
+  - R3: Documentation Research - best practices i biblioteki
+  - R4: Financial Research - koszty infrastruktury i pricing models
+
+acceptance_criteria:
+  - id: AC-1
+    title: "R1 Tech Research - Structure"
+    given: "Tech research agent executes"
+    when: "Agent generates reports/tech.md"
+    then:
+      - "Section 1: Backend Analysis (choice evaluation, fit for project)"
+      - "Section 2: Database Analysis (choice evaluation, fit for features)"
+      - "Section 3: Frontend Analysis (choice evaluation)"
+      - "Section 4: Stack Integration (ASCII diagram, integration points)"
+      - "Section 5: Risk Assessment (table: Risk, Probability, Impact, Mitigation)"
+      - "Section 6: Recommendations (recommended stack with rationale)"
+      - "Max 3000 tokens"
+      - "If web_search=true, includes current pricing/versions from 2026"
+
+  - id: AC-2
+    title: "R2 Competition Research - Structure"
+    given: "Competition research agent executes"
+    when: "Agent generates reports/competition.md"
+    then:
+      - "Section 1: Direct Competitors (3-4 profiles with URL, description, pricing, strengths/weaknesses)"
+      - "Section 2: Indirect Competitors"
+      - "Section 3: Feature Comparison Matrix (table comparing project vs competitors)"
+      - "Section 4: Market Gaps & Opportunities"
+      - "Section 5: Competitive Strategy Recommendations"
+      - "Max 3000 tokens"
+      - "If known_competitors provided, focuses on those"
+      - "If web_search=true, visits competitor websites"
+
+  - id: AC-3
+    title: "R3 Documentation Research - Structure"
+    given: "Docs research agent executes"
+    when: "Agent generates reports/documentation.md"
+    then:
+      - "Section 1: Per-technology findings (for each tech in stack)"
+      - "  - How to implement MVP features"
+      - "  - Links to docs sections"
+      - "  - Code snippets if relevant"
+      - "Section 2: Best Practices"
+      - "Section 3: Known Pitfalls (and how to avoid)"
+      - "Section 4: Recommended Libraries (table: Goal, Library, Why)"
+      - "Max 3000 tokens"
+      - "If web_search=true, searches for latest docs"
+
+  - id: AC-4
+    title: "R4 Financial Research - Structure"
+    given: "Financial research agent executes"
+    when: "Agent generates reports/financial.md"
+    then:
+      - "Section 1: Infrastructure Costs (3 scenarios: MVP, Growth, Scale)"
+      - "  - Table: Service, Provider, Cost/mo, Notes"
+      - "Section 2: SaaS Pricing Models (3 options: Freemium, Per-seat, Usage-based)"
+      - "  - For each: Pros, Cons, Fit for project"
+      - "Section 3: Break-even Analysis (assumptions, calculation)"
+      - "Section 4: Cost Optimization Tips"
+      - "Max 3000 tokens"
+      - "web_search=false (uses LLM knowledge)"
+
+  - id: AC-5
+    title: "Common: Input reading"
+    given: "Any research agent starts"
+    when: "Agent reads inputs"
+    then:
+      - "Reads discovery.yaml and shows:"
+      - "  - Project name"
+      - "  - Problem (summary)"
+      - "  - MVP features list"
+      - "Reads research-config.yaml and shows:"
+      - "  - Tech preferences"
+      - "  - Constraints"
+      - "Says: 'Preparing {research_type} research report...'"
+
+  - id: AC-6
+    title: "Common: Web search integration"
+    given: "web_search=true in config"
+    when: "Agent generates report"
+    then:
+      - "Instruction includes:"
+      - "  '## WEB SEARCH ENABLED'"
+      - "  'You have access to web search. Use it to find:'"
+      - "  '- Current pricing (as of 2026)'"
+      - "  '- Latest versions'"
+      - "  '- Recent blog posts'"
+      - "  'Cite sources: According to [Source], ...'"
+      - "Agent uses Claude web search capability"
+
+  - id: AC-7
+    title: "Common: Anti-hallucination rules"
+    given: "Instruction content"
+    when: "Developer reads instruction"
+    then:
+      - "Section '## ZASADY' includes:"
+      - "  - Bazuj TYLKO na discovery.yaml features"
+      - "  - Nie wymyślaj funkcji których nie ma"
+      - "  - Max 3000 tokenów"
+      - "  - Bądź konkretny - nie używaj ogólników"
+      - "  - Nie ignoruj preferencji użytkownika"
+
+  - id: AC-8
+    title: "Common: Output markers"
+    given: "Agent finishes report"
+    when: "Agent outputs markdown"
+    then:
+      - "Ends with:"
+      - "  ===RESEARCH_COMPLETE==="
+      - "  type: {tech|competition|docs|financial}"
+      - "  tokens: {count}"
+      - "  ===NEXT_STEP_READY==="
+
+technical_notes:
+  - "Each instruction file ~160-200 lines"
+  - "Use consistent structure across all 4 files"
+  - "Include markdown templates with placeholders"
+  - "Tech/Competition/Docs use web_search, Financial doesn't"
+  - "Reference plan sections 4.6 for detailed specs"
+  - "All agents are type: llm (non-interactive)"
+
+files_to_create:
+  - path: "instructions/prd/R1-tech-research.md"
+    description: "Tech research agent instruction (~200 lines)"
+  - path: "instructions/prd/R2-competition-research.md"
+    description: "Competition research agent instruction (~180 lines)"
+  - path: "instructions/prd/R3-docs-research.md"
+    description: "Docs research agent instruction (~170 lines)"
+  - path: "instructions/prd/R4-financial-research.md"
+    description: "Financial research agent instruction (~160 lines)"
+
+files_to_modify: []
+
+example_output_r1: |
+  ```markdown
+  # Tech Research Report: DriveSchool
+
+  **Data:** 2026-01-21T13:30:00Z
+  **Web Search:** enabled
+
+  ## Executive Summary
+
+  Recommended stack: Next.js + Supabase + shadcn/ui provides excellent fit for
+  school management app with strong auth, realtime, and mobile support.
+
+  ## 1. Backend Analysis
+
+  ### Wybór użytkownika: Node.js (Express/Fastify)
+
+  **Ocena dla tego projektu:**
+  - Dopasowanie: HIGH
+  - Uzasadnienie: Doskonałe dla MVP z kalendarzem i zarządzaniem użytkownikami
+
+  **Kluczowe zalety:**
+  - Szybki rozwój dzięki ekosystemowi npm
+  - Łatwa integracja z Supabase
+
+  ## 2. Database Analysis
+  ...
+
+  ===RESEARCH_COMPLETE===
+  type: tech
+  tokens: 2847
+  ===NEXT_STEP_READY===
+  ```

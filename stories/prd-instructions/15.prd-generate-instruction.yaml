@@ -1,0 +1,165 @@
+story_id: "15.prd-generate-instruction"
+epic: "prd-flow"
+type: "backend"
+priority: "P0"
+complexity: "XL"
+status: "pending"
+
+description: |
+  Stworzenie instrukcji dla agenta PRD Writer (PRD-G-generate.md).
+
+  Agent generuje kompletny dokument PRD:
+  - Czyta WSZYSTKIE materiały (discovery, research, brainstorm)
+  - Generuje 13-sekcyjny PRD max 10000 tokenów
+  - TYLKO fakty z materiałów - nie wymyśla
+  - Cytuje źródła: "(z tech research)", "(decyzja z brainstorm)"
+  - Tworzy prd-meta.yaml z metadanymi
+
+acceptance_criteria:
+  - id: AC-1
+    title: "PRD Structure - 13 sections"
+    given: "Agent generates prd.md"
+    when: "Agent outputs document"
+    then:
+      - "Section 1: Executive Summary (3-4 zdania + key numbers)"
+      - "Section 2: Problem Statement (current state, pain points, impact)"
+      - "Section 3: Goals & Success Metrics (tables)"
+      - "Section 4: Target Users (primary + secondary personas)"
+      - "Section 5: Solution Overview (vision + differentiators)"
+      - "Section 6: Features & Scope (MVP P0, Post-MVP P1, Out of Scope)"
+      - "Section 7: Technical Architecture (stack table + diagram + decisions)"
+      - "Section 8: Modules (detailed breakdown per module)"
+      - "Section 9: User Flows (step-by-step tables)"
+      - "Section 10: Cost Estimation (infra costs + pricing model)"
+      - "Section 11: Risks & Mitigations (table)"
+      - "Section 12: Timeline & Milestones"
+      - "Section 13: Open Questions"
+      - "Appendix: Source Documents, Glossary, Change Log"
+
+  - id: AC-2
+    title: "Source attribution"
+    given: "Agent writes any section"
+    when: "Agent includes information"
+    then:
+      - "Cites source in parentheses:"
+      - "  - (z discovery.yaml)"
+      - "  - (z tech research)"
+      - "  - (decyzja z brainstorm)"
+      - "  - (z competition research - market gaps)"
+      - "Never invents information not in source materials"
+
+  - id: AC-3
+    title: "Features section - from brainstorm"
+    given: "Section 6: Features & Scope"
+    when: "Agent lists features"
+    then:
+      - "6.1 MVP Features (P0):"
+      - "  - Table: #, Feature, Module, User Flow"
+      - "  - Populated from brainstorm.mvp_scope.must_have"
+      - "  - Source note: (z brainstorm.yaml - mvp_scope.must_have)"
+      - "6.2 Post-MVP Features (P1):"
+      - "  - Table: #, Feature, Target Release"
+      - "  - From brainstorm.mvp_scope.nice_to_have"
+      - "6.3 Out of Scope:"
+      - "  - From discovery.scope.out_of_scope"
+
+  - id: AC-4
+    title: "Technical Architecture - from research"
+    given: "Section 7: Technical Architecture"
+    when: "Agent documents tech stack"
+    then:
+      - "7.1 Technology Stack:"
+      - "  - Table: Layer, Technology, Rationale"
+      - "  - Populated from research-config + tech research recommendations"
+      - "  - Each rationale cites: (z tech research)"
+      - "7.2 System Overview:"
+      - "  - ASCII diagram from tech research (stack integration)"
+      - "7.3 Key Technical Decisions:"
+      - "  - Table: Decision, Choice, Rationale"
+      - "  - From brainstorm.technical_decisions"
+
+  - id: AC-5
+    title: "Modules section - from brainstorm"
+    given: "Section 8: Modules"
+    when: "Agent documents modules"
+    then:
+      - "For each module in brainstorm.modules:"
+      - "  8.X Module: {name}"
+      - "    Priority: {P0/P1/P2}"
+      - "    Description: {description}"
+      - "    Features: {features[]}"
+      - "    Dependencies: {dependencies[] or 'None'}"
+
+  - id: AC-6
+    title: "User Flows - from brainstorm"
+    given: "Section 9: User Flows"
+    when: "Agent documents flows"
+    then:
+      - "For each flow in brainstorm.user_flows:"
+      - "  9.X Flow: {name}"
+      - "    Actor: {actor}"
+      - "    Priority: {priority}"
+      - "    Table: Step, User Action, System Response"
+      - "    Rows from flow.steps[]"
+
+  - id: AC-7
+    title: "Cost Estimation - from financial research"
+    given: "Section 10: Cost Estimation"
+    when: "Agent includes costs"
+    then:
+      - "10.1 Infrastructure (Monthly):"
+      - "  - Tables for scenarios from financial research"
+      - "  - Scenario: MVP, Growth, Scale"
+      - "10.2 Pricing Model Recommendation:"
+      - "  - From financial research - recommended model"
+      - "  - With rationale for this project"
+
+  - id: AC-8
+    title: "Metadata output - prd-meta.yaml"
+    given: "PRD generation complete"
+    when: "Agent outputs metadata"
+    then:
+      - "Creates prd-meta.yaml with:"
+      - "  generated_at: {timestamp}"
+      - "  version: '1.0'"
+      - "  status: 'draft'"
+      - "  token_count: {estimated count}"
+      - "  subdivided: false  # true if >10000"
+      - "  sections[] - name, tokens (estimated)"
+      - "  sources_used[] - file, used (bool)"
+      - "  completeness - has_goals, has_metrics, has_features, etc (all bool)"
+
+  - id: AC-9
+    title: "Token limit handling"
+    given: "PRD would exceed 10000 tokens"
+    when: "Agent generates"
+    then:
+      - "Notes in prd-meta.yaml: subdivided: true"
+      - "Prioritizes critical sections (1-7)"
+      - "May summarize sections 8-9 if needed"
+      - "Includes note: 'Full details in source files'"
+
+  - id: AC-10
+    title: "Anti-hallucination rules"
+    given: "Instruction content"
+    when: "Developer reads rules"
+    then:
+      - "Section '## ZASADY GENEROWANIA':"
+      - "  1. TYLKO fakty z materiałów - nie wymyślaj"
+      - "  2. Cytuj źródła - (z tech research), (decision from brainstorm)"
+      - "  3. Spójność - jeśli w brainstorm jest decyzja, użyj jej"
+      - "  4. Max 10000 tokenów - jeśli więcej, podziel"
+      - "  5. Struktura - zachowaj poniższy format"
+
+technical_notes:
+  - "Instruction file ~400 lines (includes full PRD template)"
+  - "LLM-only agent (non-interactive)"
+  - "Max output: 12000 tokens (to allow for metadata)"
+  - "Use template from prd/templates/prd-template.md as reference"
+  - "Reference plan section 4.8"
+
+files_to_create:
+  - path: "instructions/prd/PRD-G-generate.md"
+    description: "PRD writer instruction (~400 lines)"
+
+files_to_modify: []

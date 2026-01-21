@@ -1,0 +1,113 @@
+# Epic Template
+# Use this template when creating new epics in Stage 1
+
+epic_id: "epic-01"  # Format: epic-NN or epic-NNa for sub-epics
+title: "Epic Title Here (10-150 chars)"
+decomposition_strategy: "thematic"  # thematic|functional|hybrid
+token_budget: 14000
+priority: "P0"  # P0 (highest) to P3 (lowest)
+status: "planning"  # planning|active|completed|blocked
+
+description: |
+  Detailed description of epic scope and objectives.
+
+  This section should explain:
+  - What this epic delivers
+  - Why it's important
+  - High-level approach
+
+  Maximum 300 tokens (~2000 characters).
+
+business_value: |
+  Why this epic matters and measurable outcomes.
+
+  Include:
+  - User/business impact
+  - Success metrics
+  - Strategic alignment
+
+  Maximum 200 tokens (~1500 characters).
+
+assumptions:
+  - id: "ASMP-01"
+    description: "Describe assumption here (e.g., 'User authentication is provided by external SSO')"
+    validation: "How to verify this assumption (e.g., 'Verify SSO integration available')"
+
+  - id: "ASMP-02"
+    description: "Another assumption"
+    validation: "Validation method"
+
+acceptance_criteria:
+  - id: "AC-01"
+    title: "Acceptance criterion title"
+    description: |
+      Given: [precondition]
+      When: [action]
+      Then: [expected outcome]
+
+      Use Given/When/Then format for clarity.
+    priority: "must-have"  # must-have|should-have|could-have|wont-have
+
+  - id: "AC-02"
+    title: "Another criterion"
+    description: |
+      Given: [precondition]
+      When: [action]
+      Then: [expected outcome]
+    priority: "must-have"
+
+ux_requirements:
+  fields:
+    - name: "field_name"
+      type: "text"  # text|number|boolean|select|multiselect|date|datetime|file|email|password|textarea|custom
+      options: []  # For select/multiselect types
+      default: null
+      validation: "required"  # Validation rules
+
+    - name: "another_field"
+      type: "boolean"
+      default: true
+
+  user_flows:
+    - id: "UF-01"
+      name: "Primary user flow name"
+      steps:
+        - "Step 1: User action"
+        - "Step 2: System response"
+        - "Step 3: Final outcome"
+
+    - id: "UF-02"
+      name: "Alternative flow"
+      steps:
+        - "Step 1"
+        - "Step 2"
+
+  wireframe_notes: |
+    Notes for UX designer and frontend developers:
+    - Layout considerations
+    - Component organization
+    - Interaction patterns
+    - Accessibility requirements
+
+    Maximum 2000 characters.
+
+technical_notes:
+  - "Technical implementation note 1 (e.g., 'Use React Hook Form for form state management')"
+  - "Technical implementation note 2"
+  - "Architecture/library choices"
+  - "Performance considerations"
+
+dependencies:
+  blocks: []  # Epic IDs that this epic must complete before (e.g., ["epic-05"])
+  blocked_by: []  # Epic IDs that must complete before this epic starts (e.g., ["epic-01", "epic-04"])
+  enhances: []  # Epics that work better with this one, but not required (e.g., ["epic-03"])
+
+estimated_stories: 8  # Number of stories expected (5-12 typical)
+estimated_complexity: "M"  # S (simple), M (medium), L (large)
+
+risks:
+  - id: "RISK-01"
+    description: "Risk description (e.g., 'SSO integration may not support all required claims')"
+    probability: "medium"  # low|medium|high
+    impact: "high"  # low|medium|high
+    mitigation: "Mitigation strategy (e.g., 'Fallback to local authentication for missing claims')"

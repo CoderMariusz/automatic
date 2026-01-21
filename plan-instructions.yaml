@@ -1,0 +1,40 @@
+version: 1
+
+# Plan for generating PRD Flow instruction files from stories
+# Usage: npm run story -- --plan=plan-instructions.yaml
+
+runner:
+  claude_cmd: ["claude"]
+  ready_marker: "===NEXT_STEP_READY==="
+  blocked_marker: "BLOCKED:"
+  pause_marker: "===PAUSE==="
+  default_timeout_sec: 3600
+
+stories:
+  input_folder: "stories/prd-instructions"
+  processed_folder: "stories/prd-instructions-done"
+  checkpoint_folder: "checkpoints/prd-instructions"
+
+checks:
+  enabled: false
+  bundles: {}
+
+autofix:
+  enabled: false
+  commands: []
+
+# Single step: generate instruction file from story spec
+steps:
+  - id: GEN
+    file: "instructions/generate-instruction.md"
+    agent: "instruction-writer"
+    timeout_sec: 3600
+    skip_when: null
+
+fix_step:
+  id: pFix
+  file: "instructions/pFix.md"
+  timeout_sec: 3600
+
+providers:
+  GEN: claude

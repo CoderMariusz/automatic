@@ -1,0 +1,263 @@
+# Epic Schema
+# Validates epic YAML files generated in Stage 1
+
+$schema: http://json-schema.org/draft-07/schema#
+type: object
+required:
+  - epic_id
+  - title
+  - decomposition_strategy
+  - token_budget
+  - priority
+  - status
+  - description
+  - business_value
+  - acceptance_criteria
+  - ux_requirements
+  - dependencies
+  - estimated_stories
+  - estimated_complexity
+
+properties:
+  epic_id:
+    type: string
+    pattern: '^epic-\d{2}[a-z]?$'
+    description: Unique epic identifier (e.g., "epic-01", "epic-01a")
+
+  title:
+    type: string
+    minLength: 10
+    maxLength: 150
+    description: Epic title
+
+  decomposition_strategy:
+    type: string
+    enum: [thematic, functional, hybrid]
+
+  token_budget:
+    type: integer
+    minimum: 1000
+    maximum: 14000
+    description: Maximum tokens allowed for this epic
+
+  priority:
+    type: string
+    pattern: '^P[0-3]$'
+    description: Priority (P0=highest, P3=lowest)
+
+  status:
+    type: string
+    enum: [planning, active, completed, blocked]
+
+  description:
+    type: string
+    minLength: 50
+    maxLength: 2000
+    description: Detailed epic description (max 300 tokens)
+
+  business_value:
+    type: string
+    minLength: 30
+    maxLength: 1500
+    description: Why this epic matters (max 200 tokens)
+
+  assumptions:
+    type: array
+    minItems: 0
+    description: Assumptions made for this epic
+    items:
+      type: object
+      required:
+        - id
+        - description
+        - validation
+      properties:
+        id:
+          type: string
+          pattern: '^ASMP-\d{2}$'
+
+        description:
+          type: string
+          minLength: 10
+          maxLength: 500
+
+        validation:
+          type: string
+          minLength: 5
+          maxLength: 300
+
+  acceptance_criteria:
+    type: array
+    minItems: 5
+    maxItems: 15
+    description: Epic-level acceptance criteria
+    items:
+      type: object
+      required:
+        - id
+        - title
+        - description
+        - priority
+      properties:
+        id:
+          type: string
+          pattern: '^AC-\d{2}$'
+
+        title:
+          type: string
+          minLength: 5
+          maxLength: 150
+
+        description:
+          type: string
+          minLength: 20
+          maxLength: 1000
+          description: Given/When/Then format preferred
+
+        priority:
+          type: string
+          enum: [must-have, should-have, could-have, wont-have]
+
+  ux_requirements:
+    type: object
+    required:
+      - fields
+      - user_flows
+    properties:
+      fields:
+        type: array
+        description: UI fields/components needed
+        items:
+          type: object
+          required:
+            - name
+            - type
+          properties:
+            name:
+              type: string
+
+            type:
+              type: string
+              enum: [text, number, boolean, select, multiselect, date, datetime, file, email, password, textarea, custom]
+
+            options:
+              type: array
+              items:
+                type: string
+
+            default:
+              description: Default value (any type)
+
+            validation:
+              type: string
+
+      user_flows:
+        type: array
+        minItems: 1
+        description: User interaction flows
+        items:
+          type: object
+          required:
+            - id
+            - name
+            - steps
+          properties:
+            id:
+              type: string
+              pattern: '^UF-\d{2}$'
+
+            name:
+              type: string
+              minLength: 5
+              maxLength: 100
+
+            steps:
+              type: array
+              minItems: 2
+              items:
+                type: string
+                minLength: 5
+                maxLength: 200
+
+      wireframe_notes:
+        type: string
+        maxLength: 2000
+        description: Wireframe and design notes
+
+  technical_notes:
+    type: array
+    description: Technical implementation notes
+    items:
+      type: string
+      minLength: 10
+      maxLength: 500
+
+  dependencies:
+    type: object
+    required:
+      - blocks
+      - blocked_by
+      - enhances
+    properties:
+      blocks:
+        type: array
+        items:
+          type: string
+          pattern: '^epic-\d{2}[a-z]?$'
+
+      blocked_by:
+        type: array
+        items:
+          type: string
+          pattern: '^epic-\d{2}[a-z]?$'
+
+      enhances:
+        type: array
+        items:
+          type: string
+          pattern: '^epic-\d{2}[a-z]?$'
+
+  estimated_stories:
+    type: integer
+    minimum: 1
+    maximum: 20
+    description: Estimated number of stories for this epic
+
+  estimated_complexity:
+    type: string
+    enum: [S, M, L]
+    description: Overall epic complexity
+
+  risks:
+    type: array
+    description: Epic-level risks
+    items:
+      type: object
+      required:
+        - id
+        - description
+        - probability
+        - impact
+        - mitigation
+      properties:
+        id:
+          type: string
+          pattern: '^RISK-\d{2}$'
+
+        description:
+          type: string
+          minLength: 10
+          maxLength: 500
+
+        probability:
+          type: string
+          enum: [low, medium, high]
+
+        impact:
+          type: string
+          enum: [low, medium, high]
+
+        mitigation:
+          type: string
+          minLength: 10
+          maxLength: 500

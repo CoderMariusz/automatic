@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs ls:*)",
+      "Bash(npx tsx:*)",
+      "Bash(npm run story:*)",
+      "Bash(cmd.exe /c \"cd /d c:\\\\Users\\\\MaKrawczyk\\\\Documents\\\\automatic && npm run story -- --plan=plan-instructions.yaml\")",
+      "Bash(cmd.exe /c \"npm run story -- --plan=plan-instructions.yaml\")",
+      "Bash(powershell.exe -Command \"cd ''c:\\\\Users\\\\MaKrawczyk\\\\Documents\\\\automatic''; npm run story -- --plan=plan-instructions.yaml\")",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat: implement PRD Flow foundation\n\n- Add flow-menu.ts for interactive flow selection \\(PRD/Epic/Story\\)\n- Add prd-runner.ts orchestrator with interactive/LLM/script step support\n- Add plan-prd.yaml configuration for PRD Flow phases\n- Add PRD-D-discovery.md instruction \\(first agent\\)\n- Add plan-instructions.yaml for generating instruction files from stories\n- Add generate-instruction.md for instruction file generation\n- Create stories 10-17 for PRD Flow implementation\n- Copy stories to prd-instructions folder for Story Flow processing\n- Add prd-template.md for PRD document structure\n- Update package.json with new npm scripts \\(start, prd, epic\\)\n- Add Flow 2 related files \\(flow2-runner, flow2-config, schemas\\)\n\nPRD Flow phases:\n- PRD-D: Discovery \\(interactive\\)\n- PRD-C: Config \\(interactive\\)\n- PRD-R1-R4: Research \\(parallel LLM\\)\n- PRD-B: Brainstorm \\(interactive\\)\n- PRD-G: Generate \\(LLM\\)\n- PRD-V: Validate \\(script\\)\n- PRD-A: Approval \\(interactive\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
+    ]
+  }
+}

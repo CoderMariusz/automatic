@@ -1,0 +1,89 @@
+# Flow 2 Configuration
+# Default settings for PRD → Epic → Story → Roadmap decomposition
+
+version: "1.0"
+
+# PRD Analysis (Stage 0)
+prd_analysis:
+  min_epic_count: 2
+  max_epic_count: 18
+  decomposition_strategy: "thematic"  # thematic|functional|hybrid
+
+# Epic Decomposition (Stage 1)
+epic_decomposition:
+  model: "sonnet"  # sonnet|opus (sonnet recommended for cost efficiency)
+  token_budget_per_epic: 14000
+  max_parallel_agents: 3
+
+# Story Decomposition (Stage 2)
+story_decomposition:
+  model: "opus"  # sonnet|opus (opus recommended for thorough AC analysis)
+  question_mode: "balanced"  # thorough|balanced|minimal
+  max_parallel_agents: 3
+  target_story_size: "S-M"  # S|M|L or ranges like S-M
+  max_ac_per_story: 4  # Maximum acceptance criteria per story
+
+# Roadmap Generation (Stage 3)
+roadmap:
+  model: "sonnet"  # sonnet recommended (structural work)
+  execution_mode: "manual_review"  # auto|manual_review|batch_approval
+  enable_critical_path_analysis: true
+  enable_risk_analysis: true
+
+# Provider Configuration
+providers:
+  claude:
+    api_key_source: "env"  # env|file
+    model_mapping:
+      sonnet: "claude-sonnet-4.5"
+      opus: "claude-opus-4.5"
+
+  # GLM provider (optional alternative)
+  # glm:
+  #   api_key_source: "env"
+  #   endpoint: "https://open.bigmodel.cn/api/paas/v4"
+  #   model_mapping:
+  #     sonnet: "glm-4-flash"  # Fast, cheap alternative
+  #     opus: "glm-4"
+
+# Validation
+validation:
+  validate_schemas: true  # Validate YAML against schemas
+  strict_mode: false  # Fail on warnings (false = warnings only)
+  check_circular_dependencies: true  # Detect circular deps in roadmap
+
+# Logging
+logging:
+  level: "info"  # debug|info|warn|error
+  output_dir: "logs/flow2"
+  save_agent_prompts: true  # Save LLM prompts for debugging
+  save_agent_responses: true  # Save LLM responses for debugging
+  log_token_usage: true  # Track token consumption per stage
+
+# Output Directories
+output:
+  analysis_dir: "analysis"
+  epics_dir: "epics"
+  stories_dir: "stories/pending"
+  roadmap_file: "roadmap.yaml"
+
+# Quality Gates
+quality_gates:
+  epic_min_ac: 5  # Minimum AC per epic
+  epic_max_ac: 15  # Maximum AC per epic
+  story_min_ac: 1  # Minimum AC per story
+  story_max_ac: 4  # Maximum AC per story
+  max_epic_token_warning: 13000  # Warn at 13K tokens (before 14K limit)
+
+# User Interaction
+interaction:
+  pause_after_prd_analysis: true  # Review PRD analysis before continuing
+  pause_after_epic_decomposition: false  # Auto-continue to story decomposition
+  pause_after_story_decomposition: false  # Auto-continue to roadmap
+  pause_after_roadmap: true  # Manual review before Flow 3 (recommended)
+
+# Advanced
+advanced:
+  enable_epic_splitting: true  # Auto-split epics exceeding token budget
+  enable_story_consolidation: false  # Consolidate very small stories (experimental)
+  parallel_question_mode: false  # Ask all questions upfront vs incrementally

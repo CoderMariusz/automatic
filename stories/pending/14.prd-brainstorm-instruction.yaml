@@ -1,0 +1,130 @@
+story_id: "14.prd-brainstorm-instruction"
+epic: "prd-flow"
+type: "backend"
+priority: "P0"
+complexity: "L"
+status: "pending"
+
+description: |
+  Stworzenie instrukcji dla agenta Brainstorm (PRD-B-brainstorm.md).
+
+  Agent prowadzi interaktywną sesję Q&A aby:
+  - Zaproponować podział na moduły (bazując na MVP features)
+  - Zdefiniować user flows (krok po kroku)
+  - Ustalić priorytety MVP (co MUST, co nice-to-have)
+  - Doprecyzować success metrics
+  - Potwierdzić decyzje techniczne z research
+
+  KLUCZOWE: Agent PROPONUJE rozwiązania (bazując na materiałach),
+  ale to USER decyduje. Agent CYTUJE raporty research.
+
+acceptance_criteria:
+  - id: AC-1
+    title: "Opening - show context"
+    given: "Agent starts"
+    when: "Agent begins brainstorm"
+    then:
+      - "Says: 'Przejrzałem wszystkie materiały:'"
+      - "Shows: Discovery: {project.name} - {problem w 1 zdaniu}"
+      - "Shows: Tech stack: {wybrane technologie}"
+      - "Shows: Research: {które raporty dostępne}"
+      - "Says: 'Mam kilka propozycji do przedyskutowania. Zaczynamy?'"
+
+  - id: AC-2
+    title: "Topic 1: Modules breakdown"
+    given: "User agrees to start"
+    when: "Agent discusses modules"
+    then:
+      - "Proposes 3-5 modules based on MVP features"
+      - "Format: '{Moduł 1} - {opis, które features}'"
+      - "Asks: 'Czy taki podział ma sens? Co byś zmienił?'"
+      - "Accepts user modifications"
+      - "Documents final module structure"
+
+  - id: AC-3
+    title: "Topic 2: User flows"
+    given: "Modules confirmed"
+    when: "Agent discusses flows"
+    then:
+      - "Proposes 2-4 main user flows"
+      - "For each flow:"
+      - "  - Shows step-by-step sequence"
+      - "  - Asks: 'Czy te kroki są poprawne? Dodaj/usuń coś?'"
+      - "Uses format:"
+      - "  Flow 1: {nazwa}"
+      - "    1. User wchodzi na stronę"
+      - "    2. ..."
+      - "    3. System odpowiada..."
+
+  - id: AC-4
+    title: "Topic 3: MVP priorities"
+    given: "User flows defined"
+    when: "Agent discusses priorities"
+    then:
+      - "References competition report: 'Z raportu konkurencji widzę, że {konkurent} ma {feature}'"
+      - "Shows MVP features from discovery"
+      - "Asks: 'Co jest absolutnym MUST dla pierwszej wersji?'"
+      - "Asks: 'Która funkcja może poczekać na V2?'"
+      - "Documents: must_have vs nice_to_have with rationale"
+
+  - id: AC-5
+    title: "Topic 4: Success metrics refinement"
+    given: "Priorities set"
+    when: "Agent discusses metrics"
+    then:
+      - "Shows metrics from discovery"
+      - "Asks: 'Czy dla MVP chcemy trackować wszystkie?'"
+      - "Asks: 'Które są kluczowe na start?'"
+      - "For each MVP metric asks: 'Jak dokładnie to zmierzymy?'"
+      - "Documents: metric, target, how_to_measure"
+
+  - id: AC-6
+    title: "Topic 5: Technical decisions"
+    given: "Metrics confirmed"
+    when: "Agent discusses tech"
+    then:
+      - "Quotes tech research: 'Z tech research wynika, że {rekomendacja}'"
+      - "Quotes docs research: 'Z docs research: {gotowe rozwiązanie}'"
+      - "Asks: 'Czy akceptujesz te rekomendacje czy masz inne zdanie?'"
+      - "Documents each decision with:"
+      - "  - topic, decision, rationale, source (research/user preference)"
+
+  - id: AC-7
+    title: "YAML output format"
+    given: "All topics discussed"
+    when: "Agent outputs brainstorm.yaml"
+    then:
+      - "Outputs valid YAML with:"
+      - "  modules[] - name, description, priority, features[], dependencies[]"
+      - "  user_flows[] - name, actor, priority, steps[]"
+      - "  mvp_scope.must_have[] - feature, module, reason"
+      - "  mvp_scope.nice_to_have[] - feature, module, defer_to"
+      - "  success_metrics.mvp[] - metric, target, how_to_measure"
+      - "  technical_decisions[] - topic, decision, rationale, source"
+      - "  open_questions[] - question, impact (blocking/non-blocking)"
+      - "Ends with: ===BRAINSTORM_COMPLETE=== and ===NEXT_STEP_READY==="
+
+  - id: AC-8
+    title: "Conversation rules"
+    given: "Instruction content"
+    when: "Developer reads rules"
+    then:
+      - "Section '## ZASADY BRAINSTORMU':"
+      - "  1. Proponuj konkretnie - nie 'może', tylko 'proponuję moduł Auth'"
+      - "  2. Cytuj materiały - 'z raportu tech wynika...'"
+      - "  3. Pozwól user'owi decydować - Ty proponujesz, on akceptuje"
+      - "  4. Dokumentuj decyzje - każda z uzasadnieniem"
+      - "  5. Max 8-10 pytań - bądź efektywny"
+
+technical_notes:
+  - "Instruction file ~220 lines"
+  - "Interactive agent - uses conversation loop"
+  - "Must quote from reports (tech.md, competition.md, etc.)"
+  - "User has final say on all decisions"
+  - "Reference plan section 4.7"
+
+files_to_create:
+  - path: "instructions/prd/PRD-B-brainstorm.md"
+    description: "Brainstorm agent instruction (~220 lines)"
+
+files_to_modify: []

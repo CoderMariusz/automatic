@@ -1,0 +1,187 @@
+story_id: "17.prd-approval-instruction"
+epic: "prd-flow"
+type: "backend"
+priority: "P0"
+complexity: "M"
+status: "pending"
+
+description: |
+  Stworzenie instrukcji dla agenta Approval (PRD-A-approval.md).
+
+  Agent prezentuje:
+  - Podsumowanie wygenerowanego PRD
+  - Wyniki walidacji (checklist rozbieżności)
+  - Opcje: approve, revise, view [section], edit, cancel
+
+  Po approve pyta: "Czy chcesz kontynuować do Epic Flow? (yes/no)"
+
+acceptance_criteria:
+  - id: AC-1
+    title: "PRD summary presentation"
+    given: "Agent starts"
+    when: "Agent loads prd.md and validation-report.yaml"
+    then:
+      - "Says: 'PRD dla projektu \"{project.name}\" został wygenerowany.'"
+      - "Shows summary:"
+      - "  - Sekcji: {count from prd-meta.yaml}"
+      - "  - Modułów: {count}"
+      - "  - MVP Features: {count}"
+      - "  - Tokenów: {count from prd-meta.yaml}"
+      - "Shows główne elementy:"
+      - "  - Problem: {1 zdanie}"
+      - "  - Rozwiązanie: {1 zdanie}"
+      - "  - Tech Stack: {stack}"
+      - "  - Timeline: {timeline}"
+
+  - id: AC-2
+    title: "Validation results presentation"
+    given: "Agent has validation-report.yaml"
+    when: "Agent displays validation"
+    then:
+      - "Says: 'Walidacja PRD vs Discovery:'"
+      - "Shows: Score: {score}% ({passed}/{total})"
+      - "If failed > 0:"
+      - "  Shows: '⚠️ Wykryto rozbieżności:'"
+      - "  Lists each FAIL:"
+      - "    '❌ {category}: {item} - {details}'"
+      - "If warnings > 0:"
+      - "  Shows: '⚡ Ostrzeżenia:'"
+      - "  Lists each WARN"
+      - "If all PASS:"
+      - "  Shows: '✅ Wszystkie elementy z Discovery są uwzględnione w PRD.'"
+
+  - id: AC-3
+    title: "Options menu"
+    given: "Summary and validation shown"
+    when: "Agent asks for user decision"
+    then:
+      - "Shows: 'Co chcesz zrobić?'"
+      - "Options:"
+      - "  1. approve - Akceptuję PRD, przejdź do Epic Flow"
+      - "  2. revise - Wróć do Brainstorm z feedbackiem"
+      - "  3. view [sekcja] - Pokaż konkretną sekcję PRD"
+      - "  4. edit - Ręczna edycja (otwórz prd.md w edytorze)"
+      - "  5. cancel - Anuluj i wyjdź"
+      - "Asks: 'Twój wybór:'"
+
+  - id: AC-4
+    title: "Option: approve"
+    given: "User chooses 'approve'"
+    when: "Agent handles approval"
+    then:
+      - "Says: 'PRD zaakceptowany! ✅'"
+      - "Says: 'Zapisuję approval.yaml...'"
+      - "Creates approval.yaml with:"
+      - "  decision: 'approved'"
+      - "  validation_score: {score}"
+      - "  approved.by: 'user'"
+      - "  approved.at: {timestamp}"
+      - "Asks: 'Czy chcesz kontynuować do Epic Flow? (yes/no)'"
+
+  - id: AC-5
+    title: "Epic Flow handoff - yes (not implemented)"
+    given: "User says 'yes' to Epic Flow"
+    when: "Epic Flow not yet implemented"
+    then:
+      - "Checks if plan-epic.yaml exists"
+      - "If not exists:"
+      - "  Says: 'Epic Flow będzie dostępny wkrótce!'"
+      - "  Says: 'Twój PRD został zapisany w: prd/projects/current/prd.md'"
+      - "  Says: 'Możesz go przeglądać lub edytować w międzyczasie.'"
+      - "Updates approval.yaml: proceed_to_epic_flow: true"
+      - "Ends with: ===NEXT_STEP_READY==="
+
+  - id: AC-6
+    title: "Epic Flow handoff - no"
+    given: "User says 'no' to Epic Flow"
+    when: "Agent handles response"
+    then:
+      - "Says: 'Świetnie! Twój PRD został zapisany.'"
+      - "Says: 'Lokalizacja: prd/projects/current/prd.md'"
+      - "Says: 'Możesz wrócić do niego później uruchamiając Epic Flow.'"
+      - "Says: 'Do zobaczenia!'"
+      - "Updates approval.yaml: proceed_to_epic_flow: false"
+      - "Ends with: ===NEXT_STEP_READY==="
+
+  - id: AC-7
+    title: "Option: revise"
+    given: "User chooses 'revise'"
+    when: "Agent handles revision"
+    then:
+      - "Says: 'OK, wracamy do Brainstorm.'"
+      - "Asks: 'Co dokładnie chcesz poprawić? (opisz feedback)'"
+      - "Waits for user feedback"
+      - "Creates approval.yaml with:"
+      - "  decision: 'revise'"
+      - "  revision.feedback: '{user feedback}'"
+      - "  revision.return_to: 'PRD-B'"
+      - "Ends with: ===NEXT_STEP_READY==="
+      - "Note: prd-runner will restart from PRD-B"
+
+  - id: AC-8
+    title: "Option: view [section]"
+    given: "User chooses 'view {section}'"
+    when: "Agent handles view"
+    then:
+      - "Reads prd.md"
+      - "Extracts section matching {section} (case-insensitive)"
+      - "Displays section content"
+      - "Says: 'Wróć do opcji: (approve/revise/view/cancel)'"
+      - "Continues conversation loop (does NOT end with ===NEXT_STEP_READY===)"
+
+  - id: AC-9
+    title: "Option: cancel"
+    given: "User chooses 'cancel'"
+    when: "Agent handles cancellation"
+    then:
+      - "Asks: 'Czy na pewno chcesz anulować? (yes/no)'"
+      - "If yes:"
+      - "  Creates approval.yaml with:"
+      - "    decision: 'cancel'"
+      - "    cancelled.reason: '{if provided}'"
+      - "  Says: 'PRD Flow anulowany.'"
+      - "  Ends with: ===NEXT_STEP_READY==="
+
+  - id: AC-10
+    title: "Output format - approval.yaml"
+    given: "User makes decision"
+    when: "Agent outputs approval.yaml"
+    then:
+      - "Creates YAML with structure:"
+      - "  timestamp: {ISO}"
+      - "  decision: 'approved' | 'revise' | 'cancel'"
+      - "  validation_score: {score}"
+      - "  validation_status: 'VALID' | 'NEEDS_REVIEW'"
+      - "If approved:"
+      - "    approved: {by, at, proceed_to_epic_flow}"
+      - "If revise:"
+      - "    revision: {feedback, return_to}"
+      - "If cancel:"
+      - "    cancelled: {reason}"
+
+technical_notes:
+  - "Instruction file ~150 lines"
+  - "Interactive agent - conversation loop"
+  - "Must handle transitions: approve → Epic Flow check, revise → PRD-B"
+  - "view command continues conversation (no ready marker)"
+  - "Reference plan section 4.9"
+
+files_to_create:
+  - path: "instructions/prd/PRD-A-approval.md"
+    description: "Approval agent instruction (~150 lines)"
+
+files_to_modify: []
+
+example_output: |
+  ```yaml
+  # approval.yaml
+  timestamp: "2026-01-21T14:30:00Z"
+  decision: "approved"
+  validation_score: 95
+  validation_status: "VALID"
+
+  approved:
+    by: "user"
+    at: "2026-01-21T14:30:00Z"
+    proceed_to_epic_flow: false
+  ```

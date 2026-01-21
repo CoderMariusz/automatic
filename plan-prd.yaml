@@ -1,0 +1,210 @@
+version: 1
+flow_type: "prd"
+flow_name: "PRD Flow - Product Requirements Document"
+
+# Runner configuration
+runner:
+  claude_cmd: ["claude"]
+  ready_marker: "===NEXT_STEP_READY==="
+  blocked_marker: "BLOCKED:"
+  pause_marker: "===PAUSE==="
+  handoff_marker: "===HANDOFF==="
+  default_timeout_sec: 3600
+
+# PRD-specific configuration
+prd_config:
+  max_tokens: 10000
+  subdivide_threshold: 10000
+  research_max_tokens: 3000
+  project_folder: "prd/projects"
+  current_project: "current"  # Single project for MVP
+
+# Steps in PRD Flow
+steps:
+  # ═══════════════════════════════════════════════════════════════
+  # PHASE 1: DISCOVERY - Interactive requirements gathering
+  # ═══════════════════════════════════════════════════════════════
+  - id: PRD-D
+    file: "instructions/prd/PRD-D-discovery.md"
+    agent: "discovery-agent"
+    type: "interactive"
+    timeout_sec: 3600
+    description: "Interactive conversation to gather project vision and requirements"
+    inputs: []
+    outputs:
+      - "discovery.yaml"
+
+  # ═══════════════════════════════════════════════════════════════
+  # PHASE 2: CONFIG - Configure research topics and tech preferences
+  # ═══════════════════════════════════════════════════════════════
+  - id: PRD-C
+    file: "instructions/prd/PRD-C-config.md"
+    agent: "config-agent"
+    type: "interactive"
+    depends_on: ["PRD-D"]
+    timeout_sec: 1800
+    description: "Configure tech stack preferences and research topics"
+    inputs:
+      - "discovery.yaml"
+    outputs:
+      - "research-config.yaml"
+
+  # ═══════════════════════════════════════════════════════════════
+  # PHASE 3: RESEARCH - Parallel research agents (conditional)
+  # ═══════════════════════════════════════════════════════════════
+  - id: PRD-R1
+    file: "instructions/prd/R1-tech-research.md"
+    agent: "tech-researcher"
+    type: "llm"
+    parallel_group: "PRD-R"
+    depends_on: ["PRD-C"]
+    timeout_sec: 1200
+    conditional: "research_config.tech.enabled"
+    max_output_tokens: 3000
+    description: "Tech stack research and evaluation"
+    inputs:
+      - "discovery.yaml"
+      - "research-config.yaml"
+    outputs:
+      - "reports/tech.md"
+
+  - id: PRD-R2
+    file: "instructions/prd/R2-competition-research.md"
+    agent: "competition-researcher"
+    type: "llm"
+    parallel_group: "PRD-R"
+    depends_on: ["PRD-C"]
+    timeout_sec: 1200
+    conditional: "research_config.competition.enabled"
+    max_output_tokens: 3000
+    description: "Competition analysis and market research"
+    inputs:
+      - "discovery.yaml"
+      - "research-config.yaml"
+    outputs:
+      - "reports/competition.md"
+
+  - id: PRD-R3
+    file: "instructions/prd/R3-docs-research.md"
+    agent: "docs-researcher"
+    type: "llm"
+    parallel_group: "PRD-R"
+    depends_on: ["PRD-C"]
+    timeout_sec: 1200
+    conditional: "research_config.documentation.enabled"
+    max_output_tokens: 3000
+    description: "Documentation and best practices research"
+    inputs:
+      - "discovery.yaml"
+      - "research-config.yaml"
+    outputs:
+      - "reports/documentation.md"
+
+  - id: PRD-R4
+    file: "instructions/prd/R4-financial-research.md"
+    agent: "financial-researcher"
+    type: "llm"
+    parallel_group: "PRD-R"
+    depends_on: ["PRD-C"]
+    timeout_sec: 1200
+    conditional: "research_config.financial.enabled"
+    max_output_tokens: 3000
+    description: "Financial and cost analysis"
+    inputs:
+      - "discovery.yaml"
+      - "research-config.yaml"
+    outputs:
+      - "reports/financial.md"
+
+  # ═══════════════════════════════════════════════════════════════
+  # PHASE 4: BRAINSTORM - Interactive refinement session
+  # ═══════════════════════════════════════════════════════════════
+  - id: PRD-B
+    file: "instructions/prd/PRD-B-brainstorm.md"
+    agent: "brainstorm-agent"
+    type: "interactive"
+    depends_on: ["PRD-R1", "PRD-R2", "PRD-R3", "PRD-R4"]
+    timeout_sec: 3600
+    description: "Interactive brainstorming session - modules, flows, priorities"
+    inputs:
+      - "discovery.yaml"
+      - "research-config.yaml"
+      - "reports/*.md"
+    outputs:
+      - "brainstorm.yaml"
+
+  # ═══════════════════════════════════════════════════════════════
+  # PHASE 5: GENERATE - PRD document generation
+  # ═══════════════════════════════════════════════════════════════
+  - id: PRD-G
+    file: "instructions/prd/PRD-G-generate.md"
+    agent: "prd-writer"
+    type: "llm"
+    depends_on: ["PRD-B"]
+    timeout_sec: 2400
+    max_output_tokens: 12000
+    description: "Generate comprehensive PRD document"
+    inputs:
+      - "discovery.yaml"
+      - "research-config.yaml"
+      - "reports/*.md"
+      - "brainstorm.yaml"
+    outputs:
+      - "prd.md"
+      - "prd-meta.yaml"
+
+  # ═══════════════════════════════════════════════════════════════
+  # PHASE 6: VALIDATE - Consistency validation (script)
+  # ═══════════════════════════════════════════════════════════════
+  - id: PRD-V
+    type: "script"
+    script: "automation/prd-validator.ts"
+    depends_on: ["PRD-G"]
+    timeout_sec: 60
+    description: "Validate PRD completeness and consistency"
+    inputs:
+      - "discovery.yaml"
+      - "research-config.yaml"
+      - "brainstorm.yaml"
+      - "prd.md"
+    outputs:
+      - "validation-report.yaml"
+
+  # ═══════════════════════════════════════════════════════════════
+  # PHASE 7: APPROVAL - Final review and approval
+  # ═══════════════════════════════════════════════════════════════
+  - id: PRD-A
+    file: "instructions/prd/PRD-A-approval.md"
+    agent: "approval-agent"
+    type: "interactive"
+    depends_on: ["PRD-V"]
+    timeout_sec: 1800
+    description: "Review validation results and approve/revise PRD"
+    inputs:
+      - "prd.md"
+      - "validation-report.yaml"
+    outputs:
+      - "approval.yaml"
+    transitions:
+      approved: "FLOW-2"  # Future: Epic Flow
+      revise: "PRD-B"
+      cancel: "EXIT"
+
+# Provider assignments (which LLM to use for each step)
+providers:
+  PRD-D: claude
+  PRD-C: claude
+  PRD-R1: glm    # Use GLM for cost-effective research
+  PRD-R2: glm
+  PRD-R3: glm
+  PRD-R4: glm
+  PRD-B: claude
+  PRD-G: claude
+  PRD-A: claude
+
+# Web search configuration (for research agents)
+web_search:
+  PRD-R1: true   # Tech research uses web search
+  PRD-R2: true   # Competition research uses web search
+  PRD-R3: true   # Docs research uses web search
+  PRD-R4: false  # Financial research uses LLM knowledge only

@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "tsx --no-cache runner.ts",
+    "start": "tsx --no-cache flow-menu.ts",
+    "story": "tsx --no-cache runner.ts",
+    "prd": "tsx --no-cache prd-runner.ts",
+    "epic": "echo 'Epic Flow not yet implemented'",
     "dev": "tsx watch runner.ts",
     "clean": "node -e \"require('fs').rmSync('node_modules/.cache',{recursive:true,force:true})\" && node -e \"require('fs').readdirSync('checkpoints').filter(f=>f.endsWith('.yaml')).forEach(f=>require('fs').unlinkSync('checkpoints/'+f))\""
   },
