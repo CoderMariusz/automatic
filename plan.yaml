@@ -58,10 +58,33 @@ autofix:
 # ============================================================================
 # STORY DELIVERY PHASES
 # ============================================================================
+# P0: YAML Spec Generation (LLM) → VALIDATE + SCAFFOLD (script, 0 tokens)
 # Based on TDD: RED (P2) → GREEN (P3) → REFACTOR (P4)
 # With quality gates: Review (P5) → QA (P6) → Docs (P7)
 
 steps:
+  # --- P0: YAML Spec Generation (NEW) ---
+  # LLM generates detailed YAML specs for deterministic scaffolding
+  - id: P0
+    file: "instructions/P0-yaml-spec.md"
+    agent: "spec-writer"
+    skip_when: null  # never skip
+    timeout_sec: 5400  # 1.5 hours
+
+  # --- VALIDATE: Check YAML specs (NEW) ---
+  # Validates spec structure before scaffold generation
+  - id: VALIDATE
+    type: "script"
+    script: "automation/yaml-validator.ts"
+    timeout_sec: 60
+
+  # --- SCAFFOLD: Deterministic code generation (NEW) ---
+  # Extracts code from YAML patterns - ZERO LLM tokens
+  - id: SCAFFOLD
+    type: "script"
+    script: "automation/scaffold-generator.ts"
+    timeout_sec: 120
+
   # --- P1: UX Design (optional - skip for backend-only) ---
   - id: P1
     file: "instructions/P1-ux-design.md"
@@ -154,14 +177,16 @@ fix_step:
 # Configure which LLM provider to use for each step
 # Options: 'claude' (default), 'glm'
 # Priority: step.provider > providers[stepId] > 'claude'
+# Note: VALIDATE and SCAFFOLD are script steps (no LLM)
 providers:
+  P0: claude    # YAML Spec Generation (requires reasoning)
   P1: claude    # UX Design
-  P2: glm       # Tests (RED)
-  P3a: glm      # Backend Services (Implementation)
-  P3b: glm      # Backend Routes (Implementation)
-  P3c: glm      # Frontend Components (Implementation)
-  P3d: glm      # Frontend Pages (Implementation)
+  P2: claude    # Tests (RED) - temporarily claude for testing
+  P3a: claude   # Backend Services (Implementation)
+  P3b: claude   # Backend Routes (Implementation)
+  P3c: claude   # Frontend Components (Implementation)
+  P3d: claude   # Frontend Pages (Implementation)
   P4: claude    # Refactor
   P5: claude    # Code Review
   P6: claude    # QA
-  P7: glm       # Documentation
+  P7: claude    # Documentation - temporarily claude for testing

@@ -191,11 +191,12 @@ interface CheckCmd {
 
 interface Step {
     id: string;
-    file: string;
+    file?: string;  // Optional for script steps
     agent?: string;
     timeout_sec?: number;
     skip_when?: string | null;
-    type?: string;
+    type?: 'llm' | 'check' | 'script';  // Step type
+    script?: string;  // Path to TypeScript file for script steps
     post_checks?: string;
     parallel_group?: string;
     depends_on?: string[];
@@ -448,6 +449,10 @@ async function runPFix(errors: string, plan: PlanConfig): Promise<boolean> {
     logCheck('Running pFix - AI Error Repair...');
 
     // Load pFix instruction
+    if (!plan.fix_step.file) {
+        logErr('pFix step has no file property');
+        return false;
+    }
     const pFixPath = resolve(__dirname, plan.fix_step.file);
     if (!existsSync(pFixPath)) {
         logErr(`pFix instruction not found: ${pFixPath}`);
@@ -548,6 +553,7 @@ function processAttachments(content: string): string {
 }
 
 function loadInstruction(step: Step, story: Story): string {
+    if (!step.file) throw new Error(`Step ${step.id} has no file property`);
     const path = resolve(__dirname, step.file);
     if (!existsSync(path)) throw new Error(`Not found: ${path}`);
 
@@ -562,20 +568,124 @@ function loadInstruction(step: Step, story: Story): string {
     return content;
 }
 
+// ============== SCRIPT STEP EXECUTION ==============
+
+async function runScriptStep(step: Step, story: Story, plan: PlanConfig): Promise<boolean> {
+    console.log('');
+    logStep(`${step.id} | script: ${step.script}`);
+
+    if (!step.script) {
+        logErr(`Step ${step.id} is type 'script' but missing 'script' property`);
+        return false;
+    }
+
+    const scriptPath = resolve(__dirname, step.script);
+    if (!existsSync(scriptPath)) {
+        logErr(`Script not found: ${scriptPath}`);
+        return false;
+    }
+
+    const timeout = step.timeout_sec || 300; // 5 min default for scripts
+    const time = new Date().toISOString().slice(11, 16);
+
+    // Create context directory if needed
+    const contextDir = resolve(__dirname, 'context', story.story_id);
+    if (!existsSync(contextDir)) {
+        mkdirSync(contextDir, { recursive: true });
+    }
+
+    // Pass story context via environment variables
+    const env = {
+        ...process.env,
+        STORY_ID: story.story_id,
+        STORY_TYPE: story.type,
+        STORY_EPIC: story.epic,
+        STORY_FILE: resolve(__dirname, plan.stories.input_folder, `${story.story_id}.yaml`),
+        CONTEXT_DIR: contextDir,
+        CHECKPOINT_DIR: resolve(__dirname, plan.stories.checkpoint_folder),
+        PROJECT_ROOT: process.cwd()
+    };
+
+    if (DRY_RUN) {
+        log(`[DRY-RUN] Would execute: npx tsx ${scriptPath}`);
+        checkpoint!.phases[step.id] = `✓ script ${time} [dry-run]`;
+        saveCheckpoint(checkpoint!, plan);
+        return true;
+    }
+
+    try {
+        log(`Executing: npx tsx ${step.script}`);
+        const result = await execAsync(`npx tsx ${scriptPath}`, {
+            timeout: timeout * 1000,
+            encoding: 'utf-8',
+            env,
+            cwd: __dirname,
+            maxBuffer: 10 * 1024 * 1024 // 10MB buffer
+        });
+
+        if (result.stdout) {
+            result.stdout.split('\n').forEach(line => {
+                if (line.trim()) log(line);
+            });
+        }
+        if (result.stderr) {
+            result.stderr.split('\n').forEach(line => {
+                if (line.trim()) logErr(line);
+            });
+        }
+
+        checkpoint!.phases[step.id] = `✓ script ${time}`;
+        saveCheckpoint(checkpoint!, plan);
+        logOk(`${step.id} completed`);
+
+        // Run post_checks if defined
+        if (step.post_checks) {
+            const checkResult = runCheckBundle(step.post_checks, plan);
+            if (!checkResult.allPassed) {
+                checkpoint!.phases[step.id + '-check'] = `✗ ${time} check-failed`;
+                saveCheckpoint(checkpoint!, plan);
+                return false;
+            }
+            checkpoint!.phases[step.id + '-check'] = `✓ ${time}`;
+            saveCheckpoint(checkpoint!, plan);
+        }
+
+        return true;
+    } catch (err: any) {
+        const output = (err.stdout || '') + (err.stderr || '');
+        logErr(`Script failed: ${err.message}`);
+        if (output) {
+            log(output.slice(0, 1000));
+        }
+
+        checkpoint!.phases[step.id] = `✗ ${time} script-error`;
+        saveCheckpoint(checkpoint!, plan);
+        return false;
+    }
+}
+
+// ============== LLM STEP EXECUTION ==============
+
 async function runStepAsync(step: Step, story: Story, plan: PlanConfig): Promise<boolean> {
+    // Dispatch to script handler for script steps
+    if (step.type === 'script') {
+        return runScriptStep(step, story, plan);
+    }
+
     console.log('');
     const providerType = getProviderForStep(step, plan);
     logStep(`${step.id} | ${step.agent || 'agent'} [${providerType}]`);
 
+    if (!step.file) {
+        logErr(`Step ${step.id} is missing 'file' property`);
+        return false;
+    }
+
     const instruction = loadInstruction(step, story);
     const timeout = step.timeout_sec || plan.runner.default_timeout_sec;
 
-    let result;
-    if (step.agent?.toLowerCase().includes('glm')) {
-        result = await runGLMAsync(instruction, timeout, step.id);
-    } else {
-        result = await runLLMAsync(instruction, timeout, step.id, providerType);
-    }
+    // Use the provider system for all LLM calls
+    const result = await runLLMAsync(instruction, timeout, step.id, providerType);
 
     const time = new Date().toISOString().slice(11, 16);
 
