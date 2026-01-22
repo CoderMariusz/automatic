@@ -245,6 +245,27 @@ interface PlanConfig {
     providers?: Record<string, ProviderType>;
 }
 
+// Roadmap v2.0 format (from flow2-runner)
+interface RoadmapStory {
+    story_id: string;
+    depends_on: string[];
+    phase: 'MVP' | 'P2' | 'P3';
+    complexity: 'S' | 'M' | 'L';
+    type: 'frontend' | 'backend' | 'fullstack';
+}
+
+interface Roadmap {
+    roadmap_version: string;
+    generated_at: string;
+    total_stories: number;
+    execution: {
+        max_parallel: number;
+        target_phase: 'MVP' | 'P2' | 'P3' | 'ALL';
+    };
+    stories: RoadmapStory[];
+    phases: Record<string, { story_count: number; description: string }>;
+}
+
 // ============== LOGGING ==============
 
 const LOG_DIR = resolve(__dirname, 'logs');
@@ -320,6 +341,90 @@ function loadStories(plan: PlanConfig): Story[] {
                 content
             };
         });
+}
+
+// ============== ROADMAP ==============
+
+const ROADMAP_FILE = 'roadmap.yaml';
+
+function loadRoadmap(): Roadmap | null {
+    const roadmapPath = resolve(__dirname, ROADMAP_FILE);
+    if (!existsSync(roadmapPath)) {
+        log('No roadmap.yaml found - processing stories in alphabetical order');
+        return null;
+    }
+
+    try {
+        const content = readFileSync(roadmapPath, 'utf-8');
+        const roadmap = parseYaml(content) as Roadmap;
+        log(`Loaded roadmap v${roadmap.roadmap_version} (${roadmap.total_stories} stories)`);
+        log(`Target phase: ${roadmap.execution.target_phase}, max parallel: ${roadmap.execution.max_parallel}`);
+        return roadmap;
+    } catch (e) {
+        logErr(`Failed to parse roadmap.yaml: ${e}`);
+        return null;
+    }
+}
+
+function canExecuteStory(
+    storyId: string,
+    roadmap: Roadmap | null,
+    completedStories: Set<string>
+): { canExecute: boolean; reason?: string } {
+    if (!roadmap) {
+        return { canExecute: true };
+    }
+
+    const roadmapStory = roadmap.stories.find(s => s.story_id === storyId);
+    if (!roadmapStory) {
+        return { canExecute: true }; // Story not in roadmap, allow execution
+    }
+
+    // Check phase
+    const targetPhase = roadmap.execution.target_phase;
+    if (targetPhase !== 'ALL') {
+        const phaseOrder = ['MVP', 'P2', 'P3'];
+        const targetIdx = phaseOrder.indexOf(targetPhase);
+        const storyIdx = phaseOrder.indexOf(roadmapStory.phase);
+
+        if (storyIdx > targetIdx) {
+            return {
+                canExecute: false,
+                reason: `Phase ${roadmapStory.phase} > target ${targetPhase}`
+            };
+        }
+    }
+
+    // Check dependencies
+    const unmetDeps = roadmapStory.depends_on.filter(dep => !completedStories.has(dep));
+    if (unmetDeps.length > 0) {
+        return {
+            canExecute: false,
+            reason: `Waiting for: ${unmetDeps.join(', ')}`
+        };
+    }
+
+    return { canExecute: true };
+}
+
+function getNextExecutableStories(
+    pendingStories: Story[],
+    roadmap: Roadmap | null,
+    completedStories: Set<string>,
+    maxParallel: number
+): Story[] {
+    const executable: Story[] = [];
+
+    for (const story of pendingStories) {
+        if (executable.length >= maxParallel) break;
+
+        const check = canExecuteStory(story.story_id, roadmap, completedStories);
+        if (check.canExecute) {
+            executable.push(story);
+        }
+    }
+
+    return executable;
 }
 
 // ============== CHECKPOINT ==============
@@ -938,6 +1043,11 @@ async function main() {
         return;
     }
 
+    // Load roadmap for dependency-aware execution
+    const roadmap = loadRoadmap();
+    const completedStories = new Set<string>(runnerState.processedStories);
+    const maxParallel = roadmap?.execution.max_parallel || 1;
+
     // Setup logging before any provider usage
     setupLogging();
 
@@ -952,17 +1062,38 @@ async function main() {
         logOk('Claude responding');
     }
 
-    // Process stories
-    for (const story of stories) {
+    // Process stories with dependency awareness
+    const pendingStories = stories.filter(s => !completedStories.has(s.story_id));
+    let processedThisRun = 0;
+    let skippedCount = 0;
+
+    while (pendingStories.length > 0) {
         if (existsSync(resolve(__dirname, 'STOP'))) {
             log('STOP file - exiting');
             break;
         }
 
-        // Skip processed stories if resuming
-        if (RUN_RESUME && runnerState.processedStories.includes(story.story_id)) {
-            continue;
+        // Find next executable stories (respecting dependencies and phase)
+        const executable = getNextExecutableStories(pendingStories, roadmap, completedStories, 1); // 1 for now (sequential)
+
+        if (executable.length === 0) {
+            // No executable stories - show why
+            log('\n⏸ No executable stories available');
+            for (const story of pendingStories) {
+                const check = canExecuteStory(story.story_id, roadmap, completedStories);
+                if (!check.canExecute) {
+                    log(`  ${story.story_id}: ${check.reason}`);
+                    skippedCount++;
+                }
+            }
+            break;
         }
+
+        const story = executable[0];
+
+        // Remove from pending
+        const idx = pendingStories.findIndex(s => s.story_id === story.story_id);
+        if (idx >= 0) pendingStories.splice(idx, 1);
 
         // Update state current story
         runnerState.currentStory = story.story_id;
@@ -1062,12 +1193,23 @@ async function main() {
             if (!runnerState.processedStories.includes(story.story_id)) {
                 runnerState.processedStories.push(story.story_id);
             }
+            // Also add to completedStories for dependency tracking
+            completedStories.add(story.story_id);
+            processedThisRun++;
+
             runnerState.currentStory = undefined;
             saveState(runnerState);
             logOk(`Story ${story.story_id} completed & saved to state`);
         }
     }
 
+    // Summary
+    console.log('\n' + '='.repeat(60));
+    log(`Processed: ${processedThisRun} stories`);
+    if (skippedCount > 0) {
+        log(`Skipped: ${skippedCount} stories (dependencies not met or phase mismatch)`);
+    }
+    log(`Remaining: ${pendingStories.length} stories`);
 
     console.log('');
     logOk('Done');

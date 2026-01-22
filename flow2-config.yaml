@@ -18,7 +18,7 @@ epic_decomposition:
 # Story Decomposition (Stage 2)
 story_decomposition:
   model: "opus"  # sonnet|opus (opus recommended for thorough AC analysis)
-  question_mode: "balanced"  # thorough|balanced|minimal
+  question_mode: "thorough"  # thorough|balanced|minimal
   max_parallel_agents: 3
   target_story_size: "S-M"  # S|M|L or ranges like S-M
   max_ac_per_story: 4  # Maximum acceptance criteria per story
@@ -79,7 +79,7 @@ quality_gates:
 interaction:
   pause_after_prd_analysis: true  # Review PRD analysis before continuing
   pause_after_epic_decomposition: false  # Auto-continue to story decomposition
-  pause_after_story_decomposition: false  # Auto-continue to roadmap
+  pause_after_story_decomposition: true  # Review stories before roadmap
   pause_after_roadmap: true  # Manual review before Flow 3 (recommended)
 
 # Advanced

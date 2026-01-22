@@ -74,13 +74,27 @@ acceptance_criteria:
     title: "Acceptance criterion title"
     given: "Precondition (user state, system state)"
     when: "User action or system trigger"
-    then: "Expected outcome (what should happen)"
+    then:
+      - "Expected outcome 1"
+      - "Expected outcome 2 (can be array for multiple checks)"
+
+    # REQUIRED for Flow 3 scaffold:
+    implementation:
+      component: "src/components/ComponentName.tsx"
+      hooks: ["useState", "useEffect"]  # React hooks used
+      api_endpoint: "POST /api/resource"  # Optional - if API call needed
+      test_file: "tests/ComponentName.test.tsx"
+      dependencies: []  # npm packages to install
 
   - id: "AC-02"
     title: "Another criterion"
     given: "..."
     when: "..."
     then: "..."
+    implementation:
+      component: "..."
+      hooks: []
+      test_file: "..."
 
 technical_notes:
   - "Specific implementation guidance (file paths, functions, patterns)"
@@ -98,26 +112,80 @@ dependencies:
 estimated_effort: "Xh"  # e.g., "4h", "1d"
 ```
 
-### 5. Interactive User Questions
+### 5. Q&A Protocol
 
 **IMPORTANT**: When you encounter ambiguity or need clarification, ASK THE USER using the AskUserQuestion tool.
 
-**Question Mode: {question_mode}**
+**Active Mode: {question_mode}**
 
-#### Thorough Mode Questions
-Ask about:
-- Edge cases (What happens when...?)
-- UX preferences (Inline errors or toast notifications?)
-- Technical choices (Which state management library?)
-- Data handling (Should data sync across devices?)
-- Performance (Should we paginate or load all?)
-- Accessibility (Screen reader support level?)
+---
 
-Example questions:
-- "Should user settings sync across devices, or remain local to each browser?"
-- "For theme switching, should changes apply instantly or require page refresh?"
-- "Error handling: Should we show inline validation errors, toast notifications, or both?"
-- "Should we implement optimistic UI updates, or wait for server confirmation?"
+## Q&A PROTOCOL (THOROUGH MODE)
+
+Before generating stories, you MUST ask questions in these categories:
+
+### 1. Technical Stack Confirmation
+- Framework/library versions (Next.js 14 vs 13?)
+- State management approach (useState, Zustand, Redux, Context?)
+- Styling solution (Tailwind CSS, CSS Modules, styled-components?)
+- Form handling (React Hook Form, Formik, native?)
+- Validation library (Zod, Yup, custom?)
+
+Example:
+- "PRD mentions React. Which state management should I use? (useState for local, Zustand for global, Context API)"
+- "For forms, should I use React Hook Form or native form handling?"
+
+### 2. UX Decisions
+- Loading states (skeleton, spinner, progressive loading?)
+- Error handling (toast notifications, inline errors, modal?)
+- Empty states design (illustration, simple text, call-to-action?)
+- Success feedback (toast, inline message, redirect?)
+
+Example:
+- "When task list is empty, show: (a) simple text, (b) illustration with CTA, (c) guided onboarding?"
+- "Error handling preference: inline validation, toast notifications, or both?"
+
+### 3. Data Flow
+- API endpoints structure (REST, GraphQL?)
+- Caching strategy (SWR, React Query, manual?)
+- Offline support requirements (none, queue changes, read-only offline?)
+- Data persistence (localStorage for MVP, API later?)
+
+Example:
+- "Should data persist to localStorage (MVP) or API from start?"
+- "Do you need offline support? If yes: read-only or queue changes?"
+
+### 4. Edge Cases
+- What happens when list/data is empty?
+- What happens when API/save fails?
+- Maximum limits (items, characters, file size?)
+- Concurrent editing handling?
+
+Example:
+- "Maximum tasks per user? (unlimited, 100, 1000?)"
+- "What happens when user tries to add task but save fails? (retry, discard, show error?)"
+
+### 5. Accessibility
+- WCAG level (A, AA, AAA?)
+- Keyboard navigation requirements
+- Screen reader announcements
+- Color contrast requirements
+
+Example:
+- "WCAG compliance level? (A minimum, AA standard, AAA strict)"
+- "Should task completion announce to screen readers?"
+
+### 6. Performance
+- Pagination vs infinite scroll vs load all?
+- Items per page (10, 25, 50?)
+- Lazy loading requirements?
+- Bundle size constraints?
+
+Example:
+- "For long task lists: pagination, infinite scroll, or virtualization?"
+- "Should images lazy load?"
+
+---
 
 #### Balanced Mode Questions
 Ask about:
@@ -186,13 +254,23 @@ acceptance_criteria:
     title: "Settings table created"
     given: "Database is initialized"
     when: "Migration is run"
-    then: "user_settings table exists with columns: id, user_id, theme_preference, notification_enabled, language, email_frequency, created_at, updated_at"
+    then:
+      - "user_settings table exists with columns: id, user_id, theme_preference, notification_enabled, language, email_frequency, created_at, updated_at"
+    implementation:
+      component: "prisma/migrations/add_user_settings/migration.sql"
+      hooks: []
+      test_file: "tests/db/user_settings.test.ts"
 
   - id: "AC-02"
     title: "Indexes created for performance"
     given: "Settings table exists"
     when: "Migration completes"
-    then: "Index exists on user_id column for fast lookups"
+    then:
+      - "Index exists on user_id column for fast lookups"
+    implementation:
+      component: "prisma/schema.prisma"
+      hooks: []
+      test_file: "tests/db/user_settings.test.ts"
 
 technical_notes:
   - "Use Prisma migrations (npx prisma migrate dev --name add_user_settings)"
@@ -227,13 +305,27 @@ acceptance_criteria:
     title: "GET /api/user/settings returns current settings"
     given: "User is authenticated"
     when: "GET request to /api/user/settings"
-    then: "Returns 200 with JSON containing all user settings"
+    then:
+      - "Returns 200 with JSON containing all user settings"
+    implementation:
+      component: "app/api/user/settings/route.ts"
+      hooks: []
+      api_endpoint: "GET /api/user/settings"
+      test_file: "tests/api/settings.test.ts"
 
   - id: "AC-02"
     title: "PUT /api/user/settings updates settings"
     given: "User is authenticated and provides valid settings JSON"
     when: "PUT request to /api/user/settings"
-    then: "Settings are updated in database and returns 200 with updated settings"
+    then:
+      - "Settings are updated in database"
+      - "Returns 200 with updated settings"
+    implementation:
+      component: "app/api/user/settings/route.ts"
+      hooks: []
+      api_endpoint: "PUT /api/user/settings"
+      test_file: "tests/api/settings.test.ts"
+      dependencies: ["zod"]
 
 technical_notes:
   - "File: app/api/user/settings/route.ts (Next.js App Router)"
@@ -254,12 +346,14 @@ estimated_effort: "4h"
 Your stories must:
 - [x] Follow INVEST principles
 - [x] Have 1-{max_ac_per_story} AC each (prefer 1-2)
-- [x] Use Given/When/Then format for all AC
+- [x] Use **Hybrid AC format**: Given/When/Then + implementation section
+- [x] Include `implementation` block with: component, hooks, api_endpoint, test_file
 - [x] Specify clear dependencies
 - [x] Include actionable technical notes
 - [x] Be small enough for single Flow 3 session (≤2 days)
 - [x] Reference actual files, libraries, and patterns from the codebase
 - [x] Have realistic effort estimates
+- [x] Pass user confirmation before saving
 
 ## Important Notes
 
@@ -278,6 +372,75 @@ Your stories must:
 
 6. **Story Order**: Number stories in logical execution order (00, 01, 02...). Story 00 is typically setup/foundation.
 
+---
+
+## CONFIRMATION PROTOCOL
+
+**IMPORTANT**: After generating ALL stories for the epic, you MUST follow this confirmation process:
+
+### Step 1: Display Summary
+Present a summary table to the user:
+
+```
+📊 STORY SUMMARY FOR EPIC {epic_id}
+
+| # | Story ID | Title | Type | Complexity | AC Count |
+|---|----------|-------|------|------------|----------|
+| 1 | {epic_id}.story-01 | ... | frontend | S | 2 |
+| 2 | {epic_id}.story-02 | ... | backend | M | 3 |
+...
+
+📈 STATISTICS:
+- Total stories: X
+- Complexity breakdown: S=X, M=X, L=X
+- Types: frontend=X, backend=X, fullstack=X
+- Total AC: X
+```
+
+### Step 2: Ask for Confirmation
+Use AskUserQuestion tool with these options:
+
+```
+"Wygenerowałem {N} stories dla Epic {epic_id}. Co chcesz zrobić?"
+
+Options:
+1. "Zaakceptuj wszystkie" - Save all stories to YAML files
+2. "Przejrzyj konkretne story" - Show details of specific story
+3. "Dodaj/usuń stories" - Modify the story list
+4. "Zmień szczegóły implementacji" - Edit implementation details
+5. "Regeneruj z nowymi wymaganiami" - Start over with new context
+```
+
+### Step 3: Handle User Response
+
+- **Zaakceptuj wszystkie**: Proceed to save stories
+- **Przejrzyj konkretne story**: Show full YAML of requested story, then ask again
+- **Dodaj/usuń stories**: Make changes, show new summary, ask again
+- **Zmień szczegóły implementacji**: Update requested details, show diff, ask again
+- **Regeneruj**: Ask what to change, regenerate all stories, show new summary
+
+### Step 4: Save Only After Confirmation
+
+**DO NOT** save stories to YAML files until user explicitly confirms with "Zaakceptuj wszystkie".
+
+Output format after confirmation:
+```
+✅ ZAPISANO {N} STORIES:
+- stories/pending/{epic_id}.story-01.yaml
+- stories/pending/{epic_id}.story-02.yaml
+...
+```
+
+---
+
 ## Begin Story Decomposition
 
-Now decompose Epic {epic_id} into stories. Remember to ask clarifying questions using AskUserQuestion tool when needed!
+Now decompose Epic {epic_id} into stories.
+
+**Process:**
+1. First, ask Q&A questions based on {question_mode} mode
+2. Generate all stories with hybrid AC format (Given/When/Then + implementation)
+3. Show summary and ask for confirmation
+4. Only save after user approves
+
+Remember to ask clarifying questions using AskUserQuestion tool when needed!
