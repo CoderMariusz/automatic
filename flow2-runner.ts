@@ -266,8 +266,8 @@ class Flow2Runner {
             fs.writeFileSync(responseFile, result.output);
         }
 
-        // Extract YAML from response
-        const yamlMatch = result.output.match(/```ya?ml\n([\s\S]+?)\n```/);
+        // Extract YAML from response (handle both Windows CRLF and Unix LF)
+        const yamlMatch = result.output.match(/```ya?ml\r?\n([\s\S]+?)\r?\n```/);
         if (!yamlMatch) {
             throw new Error('No YAML found in PRD analysis response');
         }
@@ -297,6 +297,27 @@ class Flow2Runner {
             analysis.quality_issues.forEach(issue => {
                 this.log(`  - [${issue.severity.toUpperCase()}] ${issue.issue}`);
             });
+
+            // Ask user what to do with quality issues
+            const action = await this.askUserQuestion(
+                '\nCo chcesz zrobić z quality issues?',
+                [
+                    'Kontynuuj (ignoruj issues)',
+                    'Przejrzyj po kolei i zdecyduj',
+                    'Napraw automatycznie (AI)',
+                    'Przerwij i napraw ręcznie'
+                ],
+                'Kontynuuj (ignoruj issues)'
+            );
+
+            if (action === 'Przejrzyj po kolei i zdecyduj') {
+                await this.reviewQualityIssues(analysis.quality_issues);
+            } else if (action === 'Napraw automatycznie (AI)') {
+                this.log('Automatyczna naprawa quality issues - TODO');
+                // TODO: Implement auto-fix via LLM
+            } else if (action === 'Przerwij i napraw ręcznie') {
+                throw new Error('User cancelled: Quality issues need manual review');
+            }
         }
 
         // Pause if configured
@@ -397,8 +418,8 @@ class Flow2Runner {
             throw new Error(`Epic ${epicId} build failed: ${result.error}`);
         }
 
-        // Extract YAML
-        const yamlMatch = result.output.match(/```ya?ml\n([\s\S]+?)\n```/);
+        // Extract YAML (handle both Windows CRLF and Unix LF)
+        const yamlMatch = result.output.match(/```ya?ml\r?\n([\s\S]+?)\r?\n```/);
         if (!yamlMatch) {
             throw new Error(`No YAML found in ${epicId} response`);
         }
@@ -626,8 +647,8 @@ class Flow2Runner {
             throw new Error(`Story building for ${epicId} failed: ${result.error}`);
         }
 
-        // Extract all YAML blocks
-        const yamlBlocks = result.output.matchAll(/```ya?ml\n([\s\S]+?)\n```/g);
+        // Extract all YAML blocks (handle both Windows CRLF and Unix LF)
+        const yamlBlocks = result.output.matchAll(/```ya?ml\r?\n([\s\S]+?)\r?\n```/g);
         const stories: Story[] = [];
         let storyNum = 0;
 
@@ -1243,6 +1264,42 @@ class Flow2Runner {
         if (roadmap.stories.length > 5) {
             this.log(`  ... and ${roadmap.stories.length - 5} more`);
         }
+    }
+
+    // ========================================================================
+    // Quality Issues Review
+    // ========================================================================
+
+    private async reviewQualityIssues(issues: Array<{ severity: string; issue: string; suggestion?: string }>): Promise<void> {
+        this.log('\n--- QUALITY ISSUES REVIEW ---');
+
+        for (let i = 0; i < issues.length; i++) {
+            const issue = issues[i];
+            this.log(`\n[${i + 1}/${issues.length}] [${issue.severity.toUpperCase()}]`);
+            this.log(`Issue: ${issue.issue}`);
+            if (issue.suggestion) {
+                this.log(`Suggestion: ${issue.suggestion}`);
+            }
+
+            const action = await this.askUserQuestion(
+                'Co zrobić z tym issue?',
+                [
+                    'Ignoruj i kontynuuj',
+                    'Zaznacz do naprawy później',
+                    'Przerwij proces'
+                ],
+                'Ignoruj i kontynuuj'
+            );
+
+            if (action === 'Przerwij proces') {
+                throw new Error('User cancelled: Quality issue review aborted');
+            } else if (action === 'Zaznacz do naprawy później') {
+                this.log(`  → Zaznaczono do naprawy: ${issue.issue}`);
+                // TODO: Save to a TODO list or file
+            }
+        }
+
+        this.log('\n✓ Quality issues review completed');
     }
 
     // ========================================================================
