@@ -18,6 +18,11 @@ interface FlowOption {
     description: string;
     command: string[];
     canResume?: boolean;
+    requiresInput?: {
+        prompt: string;
+        argName: string;
+        defaultValue?: string;
+    };
 }
 
 const FLOWS: FlowOption[] = [
@@ -31,9 +36,14 @@ const FLOWS: FlowOption[] = [
     {
         id: 'epic',
         name: 'Epic Flow',
-        description: 'Tworzenie epicków i architektury (not yet implemented)',
-        command: ['echo', 'Epic Flow będzie dostępny wkrótce!'],
-        canResume: false
+        description: 'Tworzenie epicków i architektury z PRD',
+        command: ['npx', 'tsx', 'flow2-runner.ts'],
+        canResume: false,
+        requiresInput: {
+            prompt: 'Podaj ścieżkę do pliku PRD',
+            argName: '--prd',
+            defaultValue: 'input/prd.md'
+        }
     },
     {
         id: 'story',
@@ -67,6 +77,22 @@ function checkForResumableProject(): { flow: string; checkpoint: string } | null
 }
 
 /**
+ * Run a flow with given command and optional extra args
+ */
+function runFlow(flow: FlowOption, extraArgs: string[] = []): void {
+    console.log(`\nUruchamiam: \x1b[36m${flow.name}\x1b[0m\n`);
+
+    const proc = spawn(flow.command[0], [...flow.command.slice(1), ...extraArgs], {
+        stdio: 'inherit',
+        shell: true
+    });
+
+    proc.on('exit', (code) => {
+        process.exit(code || 0);
+    });
+}
+
+/**
  * Show main menu with flow options
  */
 function showMainMenu(rl: readline.Interface): void {
@@ -77,23 +103,39 @@ function showMainMenu(rl: readline.Interface): void {
     console.log(`  ${FLOWS.length + 1}. Wyjście\n`);
 
     rl.question('Wybierz opcję (1-4): ', (answer) => {
-        rl.close();
-
         const choice = parseInt(answer, 10);
 
         if (choice >= 1 && choice <= FLOWS.length) {
             const selectedFlow = FLOWS[choice - 1];
-            console.log(`\nUruchamiam: \x1b[36m${selectedFlow.name}\x1b[0m\n`);
 
-            const proc = spawn(selectedFlow.command[0], selectedFlow.command.slice(1), {
-                stdio: 'inherit',
-                shell: true
-            });
+            // Check if flow requires input path
+            if (selectedFlow.requiresInput) {
+                const { prompt, argName, defaultValue } = selectedFlow.requiresInput;
+                const defaultHint = defaultValue ? ` [${defaultValue}]` : '';
 
-            proc.on('exit', (code) => {
-                process.exit(code || 0);
-            });
+                rl.question(`${prompt}${defaultHint}: `, (inputPath) => {
+                    rl.close();
+                    const path = inputPath.trim() || defaultValue || '';
+
+                    if (!path) {
+                        console.log('\x1b[31mBrak ścieżki - anulowano.\x1b[0m');
+                        process.exit(1);
+                    }
+
+                    // Check if file exists
+                    if (!existsSync(path)) {
+                        console.log(`\x1b[31mPlik nie istnieje: ${path}\x1b[0m`);
+                        process.exit(1);
+                    }
+
+                    runFlow(selectedFlow, [`${argName}=${path}`]);
+                });
+            } else {
+                rl.close();
+                runFlow(selectedFlow);
+            }
         } else {
+            rl.close();
             console.log('\nDo zobaczenia!\n');
             process.exit(0);
         }
