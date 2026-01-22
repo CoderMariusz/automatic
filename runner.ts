@@ -431,6 +431,9 @@ function getNextExecutableStories(
 
 let checkpoint: Checkpoint | null = null;
 
+// Track failure reasons for final summary
+const storyFailureReasons = new Map<string, string>();
+
 function loadCheckpoint(story: Story, plan: PlanConfig): Checkpoint {
     const dir = resolve(__dirname, plan.stories.checkpoint_folder);
     const path = resolve(dir, `${story.story_id}.yaml`);
@@ -701,6 +704,12 @@ async function runScriptStep(step: Step, story: Story, plan: PlanConfig, cp: Che
     console.log('');
     logStep(`${step.id} | script: ${step.script}`);
 
+    // Wait for file system writes to settle before VALIDATE (P0 might still be writing)
+    if (step.id === 'VALIDATE') {
+        log('Waiting 2.5s for P0 file writes to settle...');
+        await new Promise(resolve => setTimeout(resolve, 2500));
+    }
+
     if (!step.script) {
         logErr(`Step ${step.id} is type 'script' but missing 'script' property`);
         return false;
@@ -832,8 +841,79 @@ async function runScriptStep(step: Step, story: Story, plan: PlanConfig, cp: Che
     } catch (err: any) {
         const output = (err.stdout || '') + (err.stderr || '');
         logErr(`Script failed: ${err.message}`);
+
+        // Log full error output (not truncated)
         if (output) {
-            log(output.slice(0, 1000));
+            output.split('\n').forEach((line: string) => {
+                if (line.trim()) logErr(`  ${line}`);
+            });
+        }
+
+        // Store failure reason for summary
+        const failureReason = err.message.slice(0, 200);
+        storyFailureReasons.set(story.story_id, `${step.id}: ${failureReason}`);
+
+        // Retry logic for fixable script steps (VALIDATE can be fixed by regenerating specs)
+        const FIXABLE_SCRIPTS = ['VALIDATE'];
+        const MAX_SCRIPT_RETRIES = 2;
+
+        if (FIXABLE_SCRIPTS.includes(step.id) && !DRY_RUN) {
+            let retryCount = 0;
+
+            while (retryCount < MAX_SCRIPT_RETRIES) {
+                retryCount++;
+                log(`\nScript retry ${retryCount}/${MAX_SCRIPT_RETRIES} - calling pFix to repair specs...`);
+
+                // Call pFix with the error context
+                const errorContext = `Script ${step.id} failed for story ${story.story_id}:\n${output}\n\nFix the YAML specs in context/${story.story_id}/ directory.`;
+                const pFixOk = await runPFix(errorContext, plan);
+
+                if (!pFixOk) {
+                    logErr(`pFix failed on retry ${retryCount}`);
+                    continue;
+                }
+
+                // Wait a moment for file writes
+                await new Promise(resolve => setTimeout(resolve, 1000));
+
+                // Re-run the script
+                try {
+                    log(`Re-running: npx tsx ${step.script}`);
+                    const retryResult = await execAsync(`npx tsx ${scriptPath}`, {
+                        timeout: timeout * 1000,
+                        encoding: 'utf-8',
+                        env,
+                        cwd: __dirname,
+                        maxBuffer: 10 * 1024 * 1024
+                    });
+
+                    if (retryResult.stdout) {
+                        retryResult.stdout.split('\n').forEach((line: string) => {
+                            if (line.trim()) log(line);
+                        });
+                    }
+
+                    // Success!
+                    cp.phases[step.id] = `✓ script ${time} (retry ${retryCount})`;
+                    saveCheckpoint(cp, plan);
+                    logOk(`${step.id} completed after ${retryCount} retry(s)`);
+                    storyFailureReasons.delete(story.story_id);
+                    return true;
+                } catch (retryErr: any) {
+                    const retryOutput = (retryErr.stdout || '') + (retryErr.stderr || '');
+                    logErr(`Script still failing after retry ${retryCount}: ${retryErr.message}`);
+                    if (retryOutput) {
+                        retryOutput.split('\n').slice(0, 10).forEach((line: string) => {
+                            if (line.trim()) logErr(`  ${line}`);
+                        });
+                    }
+                }
+            }
+
+            logErr(`Script ${step.id} failed after ${MAX_SCRIPT_RETRIES} pFix retries`);
+            cp.phases[step.id] = `✗ ${time} script-error (${MAX_SCRIPT_RETRIES} retries exhausted)`;
+            saveCheckpoint(cp, plan);
+            return false;
         }
 
         cp.phases[step.id] = `✗ ${time} script-error`;
@@ -1303,7 +1383,8 @@ async function main() {
                 logOk(`Story ${result.storyId} completed & saved to state`);
             } else if (!result.success) {
                 failedStories.push(result.storyId);
-                logErr(`Story ${result.storyId} failed`);
+                const reason = storyFailureReasons.get(result.storyId);
+                logErr(`Story ${result.storyId} failed${reason ? `: ${reason}` : ''}`);
             }
         }
 
@@ -1318,7 +1399,11 @@ async function main() {
     console.log('\n' + '='.repeat(60));
     log(`Processed: ${processedThisRun} stories`);
     if (failedStories.length > 0) {
-        logErr(`Failed: ${failedStories.length} stories (${failedStories.join(', ')})`);
+        logErr(`Failed: ${failedStories.length} stories`);
+        for (const storyId of failedStories) {
+            const reason = storyFailureReasons.get(storyId) || 'See checkpoint for details';
+            logErr(`  ${storyId}: ${reason}`);
+        }
     }
     if (skippedCount > 0) {
         log(`Skipped: ${skippedCount} stories (dependencies not met or phase mismatch)`);
