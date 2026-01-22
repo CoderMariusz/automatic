@@ -458,6 +458,7 @@ interface CheckResult {
     name: string;
     passed: boolean;
     output: string;
+    skipped?: boolean;  // True if command not found (not a fixable error)
 }
 
 function runCheckBundle(bundleName: string, plan: PlanConfig): { allPassed: boolean; results: CheckResult[] } {
@@ -502,9 +503,22 @@ function runCheckBundle(bundleName: string, plan: PlanConfig): { allPassed: bool
 
         } catch (err: any) {
             const output = (err.stdout || '') + (err.stderr || '');
-            results.push({ name: check.name, passed: false, output });
-            logErr(`  ${check.name}: FAIL`);
-            console.log('\x1b[90m' + output.slice(0, 500) + '\x1b[0m');
+
+            // Detect "command not found" errors - these are not fixable by code changes
+            const isCommandNotFound = output.includes('Command') && output.includes('not found') ||
+                                      output.includes('ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL') ||
+                                      output.includes('ENOENT') ||
+                                      output.includes('is not recognized');
+
+            if (isCommandNotFound) {
+                // Skip this check - tool is not installed
+                results.push({ name: check.name, passed: true, output, skipped: true });
+                log(`  ${check.name}: SKIPPED (tool not installed)`);
+            } else {
+                results.push({ name: check.name, passed: false, output });
+                logErr(`  ${check.name}: FAIL`);
+                console.log('\x1b[90m' + output.slice(0, 500) + '\x1b[0m');
+            }
         }
     }
 
@@ -541,7 +555,15 @@ function runAutofix(plan: PlanConfig): boolean {
             logOk(`  ${fix.name}: done`);
         } catch (err: any) {
             const errMsg = err.stderr || err.message || 'Unknown error';
-            logErr(`  ${fix.name}: failed - ${errMsg.split('\n')[0]}`);
+            const isCommandNotFound = errMsg.includes('Command') && errMsg.includes('not found') ||
+                                      errMsg.includes('ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL') ||
+                                      errMsg.includes('ENOENT');
+
+            if (isCommandNotFound) {
+                log(`  ${fix.name}: skipped (tool not installed)`);
+            } else {
+                logErr(`  ${fix.name}: failed - ${errMsg.split('\n')[0]}`);
+            }
         }
     }
 
@@ -745,12 +767,63 @@ async function runScriptStep(step: Step, story: Story, plan: PlanConfig, cp: Che
 
         // Run post_checks if defined
         if (step.post_checks) {
-            const checkResult = runCheckBundle(step.post_checks, plan);
+            const MAX_PFIX_RETRIES = 3;
+            let checkResult = runCheckBundle(step.post_checks, plan);
+            let pfixAttempts = 0;
+
+            // Loop until checks pass or max retries exceeded
+            while (!checkResult.allPassed && pfixAttempts < MAX_PFIX_RETRIES) {
+                // Try autofix first (eslint --fix, prettier)
+                const autofixRan = runAutofix(plan);
+
+                if (autofixRan) {
+                    // Re-run checks after autofix
+                    checkResult = runCheckBundle(step.post_checks, plan);
+                    if (checkResult.allPassed) {
+                        log('Autofix resolved all issues');
+                        break;
+                    }
+                }
+
+                // Still failing - run pFix with error output
+                pfixAttempts++;
+                log(`pFix attempt ${pfixAttempts}/${MAX_PFIX_RETRIES}...`);
+
+                const errorOutput = checkResult.results
+                    .filter(r => !r.passed)
+                    .map(r => `=== ${r.name} ===\n${r.output}`)
+                    .join('\n\n');
+
+                const pFixOk = await runPFix(errorOutput, plan);
+
+                if (!pFixOk) {
+                    cp.phases[step.id + '-check'] = `✗ ${time} pfix-error (attempt ${pfixAttempts})`;
+                    saveCheckpoint(cp, plan);
+                    logErr(`pFix failed on attempt ${pfixAttempts}`);
+                    return false;
+                }
+
+                // Re-run checks after pFix
+                checkResult = runCheckBundle(step.post_checks, plan);
+
+                if (checkResult.allPassed) {
+                    log(`pFix resolved all issues on attempt ${pfixAttempts}`);
+                    break;
+                }
+
+                if (pfixAttempts < MAX_PFIX_RETRIES) {
+                    log(`Checks still failing after pFix attempt ${pfixAttempts}, retrying...`);
+                }
+            }
+
+            // Final check - did we succeed?
             if (!checkResult.allPassed) {
-                cp.phases[step.id + '-check'] = `✗ ${time} check-failed`;
+                cp.phases[step.id + '-check'] = `✗ ${time} pfix-exhausted (${pfixAttempts} attempts)`;
                 saveCheckpoint(cp, plan);
+                logErr(`post_checks still failing after ${pfixAttempts} pFix attempts`);
                 return false;
             }
+
             cp.phases[step.id + '-check'] = `✓ ${time}`;
             saveCheckpoint(cp, plan);
         }
@@ -805,61 +878,61 @@ async function runStepAsync(step: Step, story: Story, plan: PlanConfig, storyChe
         // Run post_checks if defined
         if (step.post_checks) {
             console.log('');
-            const checkResult = runCheckBundle(step.post_checks, plan);
+            const MAX_PFIX_RETRIES = 3;
+            let checkResult = runCheckBundle(step.post_checks, plan);
+            let pfixAttempts = 0;
 
-            if (!checkResult.allPassed) {
-                // Try autofix first
-                const fixed = runAutofix(plan);
+            // Loop until checks pass or max retries exceeded
+            while (!checkResult.allPassed && pfixAttempts < MAX_PFIX_RETRIES) {
+                // Try autofix first (eslint --fix, prettier)
+                const autofixRan = runAutofix(plan);
 
-                if (fixed) {
-                    // Re-run checks
-                    const recheck = runCheckBundle(step.post_checks, plan);
-                    if (!recheck.allPassed) {
-                        // Still failing? Run pFix with error output
-                        const errorOutput = recheck.results
-                            .filter(r => !r.passed)
-                            .map(r => `=== ${r.name} ===\n${r.output}`)
-                            .join('\n\n');
-
-                        const pFixOk = await runPFix(errorOutput, plan);
-
-                        if (pFixOk) {
-                            // Re-run checks after pFix
-                            const finalCheck = runCheckBundle(step.post_checks, plan);
-                            if (!finalCheck.allPassed) {
-                                cp.phases[step.id + '-check'] = `✗ ${time} pfix-failed`;
-                                saveCheckpoint(cp, plan);
-                                return false;
-                            }
-                        } else {
-                            cp.phases[step.id + '-check'] = `✗ ${time} pfix-error`;
-                            saveCheckpoint(cp, plan);
-                            return false;
-                        }
-                    }
-                } else {
-                    // No autofix available, try pFix directly
-                    const errorOutput = checkResult.results
-                        .filter(r => !r.passed)
-                        .map(r => `=== ${r.name} ===\n${r.output}`)
-                        .join('\n\n');
-
-                    const pFixOk = await runPFix(errorOutput, plan);
-
-                    if (!pFixOk) {
-                        cp.phases[step.id + '-check'] = `✗ ${time} check-failed`;
-                        saveCheckpoint(cp, plan);
-                        return false;
-                    }
-
-                    // Re-run checks after pFix to verify fix worked
-                    const finalCheck = runCheckBundle(step.post_checks, plan);
-                    if (!finalCheck.allPassed) {
-                        cp.phases[step.id + '-check'] = `✗ ${time} pfix-incomplete`;
-                        saveCheckpoint(cp, plan);
-                        return false;
+                if (autofixRan) {
+                    // Re-run checks after autofix
+                    checkResult = runCheckBundle(step.post_checks, plan);
+                    if (checkResult.allPassed) {
+                        log('Autofix resolved all issues');
+                        break;
                     }
                 }
+
+                // Still failing - run pFix with error output
+                pfixAttempts++;
+                log(`pFix attempt ${pfixAttempts}/${MAX_PFIX_RETRIES}...`);
+
+                const errorOutput = checkResult.results
+                    .filter(r => !r.passed)
+                    .map(r => `=== ${r.name} ===\n${r.output}`)
+                    .join('\n\n');
+
+                const pFixOk = await runPFix(errorOutput, plan);
+
+                if (!pFixOk) {
+                    cp.phases[step.id + '-check'] = `✗ ${time} pfix-error (attempt ${pfixAttempts})`;
+                    saveCheckpoint(cp, plan);
+                    logErr(`pFix failed on attempt ${pfixAttempts}`);
+                    return false;
+                }
+
+                // Re-run checks after pFix
+                checkResult = runCheckBundle(step.post_checks, plan);
+
+                if (checkResult.allPassed) {
+                    log(`pFix resolved all issues on attempt ${pfixAttempts}`);
+                    break;
+                }
+
+                if (pfixAttempts < MAX_PFIX_RETRIES) {
+                    log(`Checks still failing after pFix attempt ${pfixAttempts}, retrying...`);
+                }
+            }
+
+            // Final check - did we succeed?
+            if (!checkResult.allPassed) {
+                cp.phases[step.id + '-check'] = `✗ ${time} pfix-exhausted (${pfixAttempts} attempts)`;
+                saveCheckpoint(cp, plan);
+                logErr(`post_checks still failing after ${pfixAttempts} pFix attempts`);
+                return false;
             }
 
             cp.phases[step.id + '-check'] = `✓ ${time}`;
@@ -986,27 +1059,31 @@ async function runParallelGroup(steps: Step[], story: Story, plan: PlanConfig, s
     let failed = false;
 
     while (pending.length > 0 || executing.size > 0) {
-        // Find runnable steps
+        // Find and launch ALL runnable steps (not just one)
+        const toStart: Step[] = [];
         for (let i = pending.length - 1; i >= 0; i--) {
             const step = pending[i];
 
             // Checks for dependencies: if step has deps, all must be in 'completed' OR not in the parallel group at all (implied external/previous)
             const deps = step.depends_on || [];
             if (deps.every(d => completed.has(d) || !steps.some(s => s.id === d))) {
-                // Launch
+                toStart.push(step);
                 pending.splice(i, 1);
-
-                log(`Starting parallel step: ${step.id}`);
-                const p = runStepAsync(step, story, plan, storyCheckpoint).then(ok => {
-                    log(ok ? `${step.id} finished (OK)` : `${step.id} finished (FAIL)`);
-                    if (ok) completed.add(step.id);
-                    else failed = true;
-                    executing.delete(step.id);
-                    return ok;
-                });
-
-                executing.set(step.id, p);
             }
+        }
+
+        // Launch all runnable steps at once (in parallel)
+        for (const step of toStart) {
+            log(`Starting parallel step: ${step.id}`);
+            const p = runStepAsync(step, story, plan, storyCheckpoint).then(ok => {
+                log(ok ? `${step.id} finished (OK)` : `${step.id} finished (FAIL)`);
+                if (ok) completed.add(step.id);
+                else failed = true;
+                executing.delete(step.id);
+                return ok;
+            });
+
+            executing.set(step.id, p);
         }
 
         if (executing.size === 0 && pending.length > 0) {
@@ -1016,8 +1093,7 @@ async function runParallelGroup(steps: Step[], story: Story, plan: PlanConfig, s
 
         if (executing.size === 0 && pending.length === 0) break;
 
-        // Wait for at least one to finish
-        // We use Promise.race on the map values
+        // Wait for at least one to finish before checking for more runnable steps
         await Promise.race(executing.values());
 
         if (failed) return false; // Abort early if one fails

@@ -1,8 +1,9 @@
 /**
- * GLM-4.7 Provider - uses Z.ai API
+ * GLM-4.7 Provider - uses Z.ai API with progress polling
  */
 import { LLMProvider } from './base-provider.js';
-import type { LogFunction } from '../types.js';
+import type { LogFunction, PollingConfig } from '../types.js';
+import { DEFAULT_POLLING_CONFIG, formatElapsed } from '../types.js';
 
 interface ZaiApiResponse {
     choices?: Array<{
@@ -20,17 +21,20 @@ export class GlmProvider implements LLMProvider {
     private apiKey: string;
     private apiUrl: string;
     private model: string;
+    private pollingConfig: PollingConfig;
 
     constructor(
         private log: LogFunction,
         private logErr: LogFunction,
         private dryRun: boolean,
         private mockMode: boolean,
-        private rawLogDir?: string
+        private rawLogDir?: string,
+        pollingConfig?: Partial<PollingConfig>
     ) {
         this.apiKey = process.env.ZAI_API_KEY || '';
         this.apiUrl = process.env.ZAI_API_URL || 'https://api.z.ai/api/paas/v4/chat/completions';
         this.model = process.env.ZAI_MODEL || 'glm-4.7';
+        this.pollingConfig = { ...DEFAULT_POLLING_CONFIG, ...pollingConfig };
 
         if (!this.apiKey && !dryRun && !mockMode) {
             this.logErr('Warning: ZAI_API_KEY not set. GLM provider may fail.');
@@ -59,8 +63,8 @@ export class GlmProvider implements LLMProvider {
         // Save raw input
         if (this.rawLogDir) {
             try {
-                const { writeFileSync } = await import('fs');
-                const { resolve, existsSync } = await import('path');
+                const { writeFileSync, existsSync } = await import('fs');
+                const { resolve } = await import('path');
                 if (existsSync(this.rawLogDir)) {
                     writeFileSync(resolve(this.rawLogDir, `${simpleId}_${safeStepId}_input.md`), prompt);
                 }
@@ -69,11 +73,22 @@ export class GlmProvider implements LLMProvider {
             }
         }
 
-        this.log(`[${stepId}] Executing GLM-4.7 via Z.ai API (timeout: ${timeoutSec}s)...`);
+        this.log(`[${stepId}] Starting GLM-4.7 via Z.ai API (timeout: ${timeoutSec}s, polling: ${this.pollingConfig.intervalMs / 1000}s)...`);
 
         let output = '';
         let success = false;
         let errorMsg: string | undefined;
+
+        const startTime = Date.now();
+
+        // Set up progress indicator that runs while waiting
+        let progressInterval: NodeJS.Timeout | null = null;
+        if (this.pollingConfig.showProgress) {
+            progressInterval = setInterval(() => {
+                const elapsed = Date.now() - startTime;
+                this.log(`[${stepId}] Still waiting for GLM-4.7... ${formatElapsed(elapsed)} elapsed`);
+            }, this.pollingConfig.intervalMs);
+        }
 
         try {
             // Calculate max tokens (output limit)
@@ -123,6 +138,8 @@ export class GlmProvider implements LLMProvider {
             if (data.choices && data.choices.length > 0 && data.choices[0].message?.content) {
                 output = data.choices[0].message.content;
                 success = true;
+                const elapsed = Date.now() - startTime;
+                this.log(`[${stepId}] GLM-4.7 responded after ${formatElapsed(elapsed)}`);
             } else {
                 throw new Error('No content in API response');
             }
@@ -130,17 +147,23 @@ export class GlmProvider implements LLMProvider {
         } catch (err: any) {
             errorMsg = err.message || 'Unknown error';
             if (err.name === 'AbortError') {
-                errorMsg = `Request timeout after ${timeoutSec}s`;
+                const elapsed = Date.now() - startTime;
+                errorMsg = `Request timeout after ${formatElapsed(elapsed)}`;
             }
             success = false;
             this.logErr(`[${stepId}] GLM API error: ${errorMsg}`);
+        } finally {
+            // Clear progress interval
+            if (progressInterval) {
+                clearInterval(progressInterval);
+            }
         }
 
         // Save raw output
         if (this.rawLogDir) {
             try {
-                const { writeFileSync } = await import('fs');
-                const { resolve, existsSync } = await import('path');
+                const { writeFileSync, existsSync } = await import('fs');
+                const { resolve } = await import('path');
                 if (existsSync(this.rawLogDir)) {
                     writeFileSync(
                         resolve(this.rawLogDir, `${simpleId}_${safeStepId}_${success ? 'ok' : 'fail'}.md`),
