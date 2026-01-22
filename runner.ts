@@ -675,7 +675,7 @@ function loadInstruction(step: Step, story: Story): string {
 
 // ============== SCRIPT STEP EXECUTION ==============
 
-async function runScriptStep(step: Step, story: Story, plan: PlanConfig): Promise<boolean> {
+async function runScriptStep(step: Step, story: Story, plan: PlanConfig, cp: Checkpoint): Promise<boolean> {
     console.log('');
     logStep(`${step.id} | script: ${step.script}`);
 
@@ -713,8 +713,8 @@ async function runScriptStep(step: Step, story: Story, plan: PlanConfig): Promis
 
     if (DRY_RUN) {
         log(`[DRY-RUN] Would execute: npx tsx ${scriptPath}`);
-        checkpoint!.phases[step.id] = `✓ script ${time} [dry-run]`;
-        saveCheckpoint(checkpoint!, plan);
+        cp.phases[step.id] = `✓ script ${time} [dry-run]`;
+        saveCheckpoint(cp, plan);
         return true;
     }
 
@@ -739,20 +739,20 @@ async function runScriptStep(step: Step, story: Story, plan: PlanConfig): Promis
             });
         }
 
-        checkpoint!.phases[step.id] = `✓ script ${time}`;
-        saveCheckpoint(checkpoint!, plan);
+        cp.phases[step.id] = `✓ script ${time}`;
+        saveCheckpoint(cp, plan);
         logOk(`${step.id} completed`);
 
         // Run post_checks if defined
         if (step.post_checks) {
             const checkResult = runCheckBundle(step.post_checks, plan);
             if (!checkResult.allPassed) {
-                checkpoint!.phases[step.id + '-check'] = `✗ ${time} check-failed`;
-                saveCheckpoint(checkpoint!, plan);
+                cp.phases[step.id + '-check'] = `✗ ${time} check-failed`;
+                saveCheckpoint(cp, plan);
                 return false;
             }
-            checkpoint!.phases[step.id + '-check'] = `✓ ${time}`;
-            saveCheckpoint(checkpoint!, plan);
+            cp.phases[step.id + '-check'] = `✓ ${time}`;
+            saveCheckpoint(cp, plan);
         }
 
         return true;
@@ -763,18 +763,21 @@ async function runScriptStep(step: Step, story: Story, plan: PlanConfig): Promis
             log(output.slice(0, 1000));
         }
 
-        checkpoint!.phases[step.id] = `✗ ${time} script-error`;
-        saveCheckpoint(checkpoint!, plan);
+        cp.phases[step.id] = `✗ ${time} script-error`;
+        saveCheckpoint(cp, plan);
         return false;
     }
 }
 
 // ============== LLM STEP EXECUTION ==============
 
-async function runStepAsync(step: Step, story: Story, plan: PlanConfig): Promise<boolean> {
+async function runStepAsync(step: Step, story: Story, plan: PlanConfig, storyCheckpoint?: Checkpoint): Promise<boolean> {
+    // Use provided checkpoint or fall back to global (for backwards compatibility)
+    const cp = storyCheckpoint || checkpoint!;
+
     // Dispatch to script handler for script steps
     if (step.type === 'script') {
-        return runScriptStep(step, story, plan);
+        return runScriptStep(step, story, plan, cp);
     }
 
     console.log('');
@@ -795,8 +798,8 @@ async function runStepAsync(step: Step, story: Story, plan: PlanConfig): Promise
     const time = new Date().toISOString().slice(11, 16);
 
     if (result.ok) {
-        checkpoint!.phases[step.id] = `✓ ${step.agent || 'agent'} ${time}`;
-        saveCheckpoint(checkpoint!, plan);
+        cp.phases[step.id] = `✓ ${step.agent || 'agent'} ${time}`;
+        saveCheckpoint(cp, plan);
         logOk(`${step.id} completed`);
 
         // Run post_checks if defined
@@ -824,13 +827,13 @@ async function runStepAsync(step: Step, story: Story, plan: PlanConfig): Promise
                             // Re-run checks after pFix
                             const finalCheck = runCheckBundle(step.post_checks, plan);
                             if (!finalCheck.allPassed) {
-                                checkpoint!.phases[step.id + '-check'] = `✗ ${time} pfix-failed`;
-                                saveCheckpoint(checkpoint!, plan);
+                                cp.phases[step.id + '-check'] = `✗ ${time} pfix-failed`;
+                                saveCheckpoint(cp, plan);
                                 return false;
                             }
                         } else {
-                            checkpoint!.phases[step.id + '-check'] = `✗ ${time} pfix-error`;
-                            saveCheckpoint(checkpoint!, plan);
+                            cp.phases[step.id + '-check'] = `✗ ${time} pfix-error`;
+                            saveCheckpoint(cp, plan);
                             return false;
                         }
                     }
@@ -841,32 +844,139 @@ async function runStepAsync(step: Step, story: Story, plan: PlanConfig): Promise
                         .map(r => `=== ${r.name} ===\n${r.output}`)
                         .join('\n\n');
 
-                    const pFixOk = runPFix(errorOutput, plan);
+                    const pFixOk = await runPFix(errorOutput, plan);
 
                     if (!pFixOk) {
-                        checkpoint!.phases[step.id + '-check'] = `✗ ${time} check-failed`;
-                        saveCheckpoint(checkpoint!, plan);
+                        cp.phases[step.id + '-check'] = `✗ ${time} check-failed`;
+                        saveCheckpoint(cp, plan);
+                        return false;
+                    }
+
+                    // Re-run checks after pFix to verify fix worked
+                    const finalCheck = runCheckBundle(step.post_checks, plan);
+                    if (!finalCheck.allPassed) {
+                        cp.phases[step.id + '-check'] = `✗ ${time} pfix-incomplete`;
+                        saveCheckpoint(cp, plan);
                         return false;
                     }
                 }
             }
 
-            checkpoint!.phases[step.id + '-check'] = `✓ ${time}`;
-            saveCheckpoint(checkpoint!, plan);
+            cp.phases[step.id + '-check'] = `✓ ${time}`;
+            saveCheckpoint(cp, plan);
         }
 
         return true;
     } else {
-        checkpoint!.phases[step.id] = `✗ ${time} ${result.error}`;
-        saveCheckpoint(checkpoint!, plan);
+        cp.phases[step.id] = `✗ ${time} ${result.error}`;
+        saveCheckpoint(cp, plan);
         logErr(`${step.id} failed: ${result.error}`);
         return false;
     }
 }
 
+// ============== SINGLE STORY EXECUTION ==============
+
+async function runSingleStory(
+    story: Story,
+    plan: PlanConfig,
+    runnerState: RunnerState
+): Promise<{ success: boolean; storyId: string }> {
+    console.log('\n' + '='.repeat(60));
+    logStep(`Story: ${story.story_id} (${story.type})`);
+    console.log('='.repeat(60));
+
+    const storyCheckpoint = loadCheckpoint(story, plan);
+    let storyFailed = false;
+
+    let i = 0;
+    while (i < plan.steps.length) {
+        if (existsSync(resolve(__dirname, 'STOP'))) break;
+
+        const step = plan.steps[i];
+
+        // Skip check-only steps (handled by post_checks)
+        if (step.type === 'check') {
+            i++;
+            continue;
+        }
+
+        // If --step flag, only run that step
+        if (ONLY_STEP && step.id !== ONLY_STEP) {
+            i++;
+            continue;
+        }
+
+        // Check if start of parallel group
+        if (step.parallel_group && !ONLY_STEP) {
+            const groupName = step.parallel_group;
+            const groupSteps: Step[] = [];
+
+            // Collect all steps in this group
+            let j = i;
+            while (j < plan.steps.length && plan.steps[j].parallel_group === groupName) {
+                groupSteps.push(plan.steps[j]);
+                j++;
+            }
+
+            if (groupSteps.length > 0) {
+                const activeSteps: Step[] = [];
+                for (const s of groupSteps) {
+                    const skip = shouldSkip(s, story);
+                    if (skip) {
+                        log(`[${story.story_id}] Skip ${s.id}: ${skip}`);
+                        storyCheckpoint.phases[s.id] = `⊘ ${skip}`;
+                        saveCheckpoint(storyCheckpoint, plan);
+                        continue;
+                    }
+                    if (storyCheckpoint.phases[s.id]?.startsWith('✓')) {
+                        log(`[${story.story_id}] ${s.id}: done`);
+                        continue;
+                    }
+                    activeSteps.push(s);
+                }
+
+                if (activeSteps.length > 0) {
+                    const ok = await runParallelGroup(activeSteps, story, plan, storyCheckpoint);
+                    if (!ok) {
+                        storyFailed = true;
+                        break;
+                    }
+                }
+
+                i = j; // Advance main loop past group
+                continue;
+            }
+        }
+
+        const skip = shouldSkip(step, story);
+        if (skip) {
+            log(`[${story.story_id}] Skip ${step.id}: ${skip}`);
+            storyCheckpoint.phases[step.id] = `⊘ ${skip}`;
+            saveCheckpoint(storyCheckpoint, plan);
+            i++;
+            continue;
+        }
+
+        if (storyCheckpoint.phases[step.id]?.startsWith('✓')) {
+            log(`[${story.story_id}] ${step.id}: done`);
+            i++;
+            continue;
+        }
+
+        if (!(await runStepAsync(step, story, plan, storyCheckpoint))) {
+            storyFailed = true;
+            break;
+        }
+        i++;
+    }
+
+    return { success: !storyFailed && !existsSync(resolve(__dirname, 'STOP')), storyId: story.story_id };
+}
+
 // ============== PARALLEL EXECUTION ==============
 
-async function runParallelGroup(steps: Step[], story: Story, plan: PlanConfig): Promise<boolean> {
+async function runParallelGroup(steps: Step[], story: Story, plan: PlanConfig, storyCheckpoint: Checkpoint): Promise<boolean> {
     log(`Running parallel group: ${steps.map(s => s.id).join(', ')}`);
 
     // Simple DAG scheduler
@@ -887,7 +997,7 @@ async function runParallelGroup(steps: Step[], story: Story, plan: PlanConfig): 
                 pending.splice(i, 1);
 
                 log(`Starting parallel step: ${step.id}`);
-                const p = runStepAsync(step, story, plan).then(ok => {
+                const p = runStepAsync(step, story, plan, storyCheckpoint).then(ok => {
                     log(ok ? `${step.id} finished (OK)` : `${step.id} finished (FAIL)`);
                     if (ok) completed.add(step.id);
                     else failed = true;
@@ -1066,6 +1176,7 @@ async function main() {
     const pendingStories = stories.filter(s => !completedStories.has(s.story_id));
     let processedThisRun = 0;
     let skippedCount = 0;
+    let failedStories: string[] = [];
 
     while (pendingStories.length > 0) {
         if (existsSync(resolve(__dirname, 'STOP'))) {
@@ -1074,7 +1185,7 @@ async function main() {
         }
 
         // Find next executable stories (respecting dependencies and phase)
-        const executable = getNextExecutableStories(pendingStories, roadmap, completedStories, 1); // 1 for now (sequential)
+        const executable = getNextExecutableStories(pendingStories, roadmap, completedStories, maxParallel);
 
         if (executable.length === 0) {
             // No executable stories - show why
@@ -1089,130 +1200,62 @@ async function main() {
             break;
         }
 
-        const story = executable[0];
-
-        // Remove from pending
-        const idx = pendingStories.findIndex(s => s.story_id === story.story_id);
-        if (idx >= 0) pendingStories.splice(idx, 1);
-
-        // Update state current story
-        runnerState.currentStory = story.story_id;
-        saveState(runnerState);
-
-        console.log('\n' + '='.repeat(60));
-        logStep(`Story: ${story.story_id} (${story.type})`);
-        console.log('='.repeat(60));
-
-        checkpoint = loadCheckpoint(story, plan);
-        let storyFailed = false;
-
-        let i = 0;
-        while (i < plan.steps.length) {
-            if (existsSync(resolve(__dirname, 'STOP'))) break;
-
-            const step = plan.steps[i];
-
-            // Skip check-only steps (handled by post_checks)
-            if (step.type === 'check') {
-                i++;
-                continue;
-            }
-
-            // If --step flag, only run that step
-            if (ONLY_STEP && step.id !== ONLY_STEP) {
-                i++;
-                continue;
-            }
-
-            // Check if start of parallel group
-            if (step.parallel_group && !ONLY_STEP) {
-                const groupName = step.parallel_group;
-                const groupSteps: Step[] = [];
-
-                // Collect all steps in this group
-                let j = i;
-                while (j < plan.steps.length && plan.steps[j].parallel_group === groupName) {
-                    groupSteps.push(plan.steps[j]);
-                    j++;
-                }
-
-                if (groupSteps.length > 0) {
-                    const activeSteps: Step[] = [];
-                    for (const s of groupSteps) {
-                        const skip = shouldSkip(s, story);
-                        if (skip) {
-                            log(`Skip ${s.id}: ${skip}`);
-                            checkpoint.phases[s.id] = `⊘ ${skip}`;
-                            saveCheckpoint(checkpoint, plan);
-                            continue;
-                        }
-                        if (checkpoint.phases[s.id]?.startsWith('✓')) {
-                            log(`${s.id}: done`);
-                            continue;
-                        }
-                        activeSteps.push(s);
-                    }
-
-                    if (activeSteps.length > 0) {
-                        const ok = await runParallelGroup(activeSteps, story, plan);
-                        if (!ok) {
-                            storyFailed = true;
-                            break;
-                        }
-                    }
-
-                    i = j; // Advance main loop past group
-                    continue;
-                }
-            }
-
-            const skip = shouldSkip(step, story);
-            if (skip) {
-                log(`Skip ${step.id}: ${skip}`);
-                checkpoint.phases[step.id] = `⊘ ${skip}`;
-                saveCheckpoint(checkpoint, plan);
-                i++;
-                continue;
-            }
-
-            if (checkpoint.phases[step.id]?.startsWith('✓')) {
-                log(`${step.id}: done`);
-                i++;
-                continue;
-            }
-
-            if (!(await runStepAsync(step, story, plan))) {
-                storyFailed = true;
-                break;
-            }
-            i++;
+        // Remove executable stories from pending
+        for (const story of executable) {
+            const idx = pendingStories.findIndex(s => s.story_id === story.story_id);
+            if (idx >= 0) pendingStories.splice(idx, 1);
         }
 
-        // If story completed successfully (and not just one step run), mark as processed
-        if (!storyFailed && !ONLY_STEP && !existsSync(resolve(__dirname, 'STOP'))) {
-            if (!runnerState.processedStories.includes(story.story_id)) {
-                runnerState.processedStories.push(story.story_id);
-            }
-            // Also add to completedStories for dependency tracking
-            completedStories.add(story.story_id);
-            processedThisRun++;
+        // Log what we're about to run
+        if (executable.length > 1) {
+            log(`\n🚀 Running ${executable.length} stories in parallel: ${executable.map(s => s.story_id).join(', ')}`);
+        }
 
-            runnerState.currentStory = undefined;
-            saveState(runnerState);
-            logOk(`Story ${story.story_id} completed & saved to state`);
+        // Run stories in parallel (or single if only one)
+        const storyPromises = executable.map(story => runSingleStory(story, plan, runnerState));
+        const results = await Promise.all(storyPromises);
+
+        // Process results
+        for (const result of results) {
+            if (result.success && !ONLY_STEP) {
+                if (!runnerState.processedStories.includes(result.storyId)) {
+                    runnerState.processedStories.push(result.storyId);
+                }
+                completedStories.add(result.storyId);
+                processedThisRun++;
+                saveState(runnerState);
+                logOk(`Story ${result.storyId} completed & saved to state`);
+            } else if (!result.success) {
+                failedStories.push(result.storyId);
+                logErr(`Story ${result.storyId} failed`);
+            }
+        }
+
+        // If any story failed, stop processing
+        if (failedStories.length > 0) {
+            log(`\n⚠ Stopping due to failed stories: ${failedStories.join(', ')}`);
+            break;
         }
     }
 
     // Summary
     console.log('\n' + '='.repeat(60));
     log(`Processed: ${processedThisRun} stories`);
+    if (failedStories.length > 0) {
+        logErr(`Failed: ${failedStories.length} stories (${failedStories.join(', ')})`);
+    }
     if (skippedCount > 0) {
         log(`Skipped: ${skippedCount} stories (dependencies not met or phase mismatch)`);
     }
     log(`Remaining: ${pendingStories.length} stories`);
 
     console.log('');
-    logOk('Done');
+    if (failedStories.length > 0) {
+        logErr('Finished with errors');
+        process.exit(1);
+    } else {
+        logOk('Done');
+    }
 }
 
 process.on('SIGINT', () => { log('\nInterrupted'); process.exit(130); });

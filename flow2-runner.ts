@@ -945,6 +945,21 @@ class Flow2Runner {
 
         this.log(`Loaded ${epics.length} epics and ${stories.length} stories`);
 
+        // Step 0: Validate and auto-fix dependencies
+        this.log('\n0. Validating dependencies...');
+        const validationResult = this.validateAndFixDependencies(stories);
+
+        if (validationResult.fixed > 0) {
+            this.log(`   ⚠ Auto-fixed ${validationResult.fixed} invalid dependencies (epic refs → story refs)`);
+        }
+        if (validationResult.removed > 0) {
+            this.log(`   ⚠ Removed ${validationResult.removed} invalid dependencies`, 'warn');
+            validationResult.errors.forEach(err => this.log(`     - ${err}`, 'warn'));
+        }
+        if (validationResult.fixed === 0 && validationResult.removed === 0) {
+            this.log('   ✓ All dependencies valid');
+        }
+
         // Step 1: Build dependency graph
         this.log('\n1. Building dependency graph...');
         const graph = this.buildDependencyGraph(stories);
@@ -1046,6 +1061,81 @@ class Flow2Runner {
         }
 
         return graph;
+    }
+
+    /**
+     * Validate and auto-fix dependencies in stories
+     * - Checks that all dependencies reference valid story IDs
+     * - Auto-fixes epic-level references (e.g., "epic-1" → last story of that epic)
+     * - Removes invalid dependencies with warning
+     */
+    private validateAndFixDependencies(stories: Story[]): { fixed: number; removed: number; errors: string[] } {
+        const validStoryIds = new Set(stories.map(s => s.story_id));
+        const errors: string[] = [];
+        let fixed = 0;
+        let removed = 0;
+
+        // Group stories by epic to find "last story" for epic-level deps
+        const storiesByEpic = new Map<string, Story[]>();
+        for (const story of stories) {
+            const epicId = story.epic;
+            if (!storiesByEpic.has(epicId)) {
+                storiesByEpic.set(epicId, []);
+            }
+            storiesByEpic.get(epicId)!.push(story);
+        }
+
+        // Sort stories within each epic by story number
+        for (const [, epicStories] of storiesByEpic) {
+            epicStories.sort((a, b) => {
+                const numA = parseInt(a.story_id.split('.story-')[1] || '0', 10);
+                const numB = parseInt(b.story_id.split('.story-')[1] || '0', 10);
+                return numA - numB;
+            });
+        }
+
+        // Validate and fix each story's dependencies
+        for (const story of stories) {
+            if (!story.dependencies || story.dependencies.length === 0) continue;
+
+            const fixedDeps: string[] = [];
+
+            for (const dep of story.dependencies) {
+                // Check if it's a valid story ID
+                if (validStoryIds.has(dep)) {
+                    fixedDeps.push(dep);
+                    continue;
+                }
+
+                // Try to auto-fix: check if it looks like an epic reference
+                // Patterns: "epic-1", "epic-01", "epic-1" (without leading zero)
+                const epicMatch = dep.match(/^epic-?(\d+)$/i);
+                if (epicMatch) {
+                    // Normalize epic ID
+                    const epicNum = parseInt(epicMatch[1], 10);
+                    const normalizedEpicId = `epic-${epicNum.toString().padStart(2, '0')}`;
+
+                    // Find last story of that epic
+                    const epicStories = storiesByEpic.get(normalizedEpicId);
+                    if (epicStories && epicStories.length > 0) {
+                        const lastStory = epicStories[epicStories.length - 1];
+                        fixedDeps.push(lastStory.story_id);
+                        this.log(`  Auto-fix: ${story.story_id} dependency "${dep}" → "${lastStory.story_id}"`, 'warn');
+                        fixed++;
+                        continue;
+                    }
+                }
+
+                // Could not fix - remove with warning
+                errors.push(`${story.story_id}: Invalid dependency "${dep}" (not a valid story ID) - REMOVED`);
+                removed++;
+            }
+
+            // Update story dependencies
+            story.dependencies = fixedDeps;
+        }
+
+        return { fixed, removed, errors };
     }
 
     private detectCircularDependencies(graph: Map<string, string[]>, stories: Story[]): string[] | null {
