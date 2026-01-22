@@ -311,10 +311,18 @@ class Flow2Runner {
             );
 
             if (action === 'Przejrzyj po kolei i zdecyduj') {
-                await this.reviewQualityIssues(analysis.quality_issues);
+                const issuesToFix = await this.reviewQualityIssuesInteractive(analysis.quality_issues);
+                if (issuesToFix.length > 0) {
+                    await this.autoFixQualityIssues(prdPath, issuesToFix);
+                    // Re-run analysis after fixing
+                    this.log('\n🔄 Re-running PRD analysis after fixes...');
+                    return this.stage0_analyzePRD(prdPath);
+                }
             } else if (action === 'Napraw automatycznie (AI)') {
-                this.log('Automatyczna naprawa quality issues - TODO');
-                // TODO: Implement auto-fix via LLM
+                await this.autoFixQualityIssues(prdPath, analysis.quality_issues);
+                // Re-run analysis after fixing
+                this.log('\n🔄 Re-running PRD analysis after fixes...');
+                return this.stage0_analyzePRD(prdPath);
             } else if (action === 'Przerwij i napraw ręcznie') {
                 throw new Error('User cancelled: Quality issues need manual review');
             }
@@ -411,8 +419,17 @@ class Flow2Runner {
             .replace(/{epic_scope}/g, proposedEpic.scope)
             .replace(/{decomposition_strategy}/g, this.config.prd_analysis.decomposition_strategy);
 
+        // Save prompt for debugging
+        const promptFile = path.join(this.logDir, `${epicId}-epic-prompt.md`);
+        fs.writeFileSync(promptFile, prompt);
+
         // Execute
         const result = await this.provider.execute(prompt, 900, `epic-builder-${epicId}`);
+
+        // Save raw output for debugging
+        const outputFile = path.join(this.logDir, `${epicId}-epic-output.md`);
+        fs.writeFileSync(outputFile, result.output);
+        this.log(`  Debug: Saved output to ${outputFile} (${result.output.length} chars)`);
 
         if (!result.ok) {
             throw new Error(`Epic ${epicId} build failed: ${result.error}`);
@@ -640,28 +657,64 @@ class Flow2Runner {
             prompt += `\n\n## User Context (from Q&A)\n${contextStr}`;
         }
 
+        // Save prompt for debugging
+        const promptFile = path.join(this.logDir, `${epicId}-prompt.md`);
+        fs.writeFileSync(promptFile, prompt);
+
         // Execute
         const result = await this.provider.execute(prompt, 1800, `story-builder-${epicId}`);
+
+        // Save raw output for debugging
+        const outputFile = path.join(this.logDir, `${epicId}-output.md`);
+        fs.writeFileSync(outputFile, result.output);
+        this.log(`  Debug: Saved output to ${outputFile} (${result.output.length} chars)`);
 
         if (!result.ok) {
             throw new Error(`Story building for ${epicId} failed: ${result.error}`);
         }
 
+        // DEBUG: Show output preview
+        this.log('  DEBUG: Output length: ' + result.output.length + ' chars');
+        this.log('  DEBUG: First 300 chars: ' + result.output.substring(0, 300).replace(/\n/g, '\\n'));
+
         // Extract all YAML blocks (handle both Windows CRLF and Unix LF)
-        const yamlBlocks = result.output.matchAll(/```ya?ml\r?\n([\s\S]+?)\r?\n```/g);
+        // Try multiple regex patterns
+        let yamlMatches: RegExpMatchArray[] = [];
+
+        // Pattern 1: Standard markdown code fence
+        const pattern1 = /```ya?ml\r?\n([\s\S]+?)\r?\n```/g;
+        yamlMatches = [...result.output.matchAll(pattern1)];
+        this.log('  DEBUG: Pattern 1 (yaml code fence) found ' + yamlMatches.length + ' matches');
+
+        // Pattern 2: If pattern 1 fails, try without CRLF handling
+        if (yamlMatches.length === 0) {
+            const pattern2 = /```ya?ml\n([\s\S]+?)\n```/g;
+            yamlMatches = [...result.output.matchAll(pattern2)];
+            this.log('  DEBUG: Pattern 2 (unix only) found ' + yamlMatches.length + ' matches');
+        }
+
+        // Pattern 3: More relaxed - any yaml block
+        if (yamlMatches.length === 0) {
+            const pattern3 = /```yaml([\s\S]+?)```/g;
+            yamlMatches = [...result.output.matchAll(pattern3)];
+            this.log('  DEBUG: Pattern 3 (relaxed) found ' + yamlMatches.length + ' matches');
+        }
+
         const stories: Story[] = [];
         let storyNum = 0;
 
-        for (const match of yamlBlocks) {
+        for (const match of yamlMatches) {
             storyNum++;
             try {
-                const story = yaml.parse(match[1]) as Story;
+                const yamlContent = match[1].trim();
+                this.log('  DEBUG: Parsing story ' + storyNum + ', YAML length: ' + yamlContent.length);
+                const story = yaml.parse(yamlContent) as Story;
                 // Ensure story_id is set correctly
                 story.story_id = `${epicId}.story-${storyNum.toString().padStart(2, '0')}`;
                 story.epic = epicId;
                 stories.push(story);
             } catch (e) {
-                this.log(`  Warning: Failed to parse story ${storyNum} for ${epicId}`, 'warn');
+                this.log(`  Warning: Failed to parse story ${storyNum} for ${epicId}: ${(e as Error).message}`, 'warn');
             }
         }
 
@@ -1267,11 +1320,14 @@ class Flow2Runner {
     }
 
     // ========================================================================
-    // Quality Issues Review
+    // Quality Issues Review & Auto-Fix
     // ========================================================================
 
-    private async reviewQualityIssues(issues: Array<{ severity: string; issue: string; suggestion?: string }>): Promise<void> {
+    private async reviewQualityIssuesInteractive(
+        issues: Array<{ severity: string; issue: string; suggestion?: string }>
+    ): Promise<Array<{ severity: string; issue: string; suggestion?: string }>> {
         this.log('\n--- QUALITY ISSUES REVIEW ---');
+        const issuesToFix: Array<{ severity: string; issue: string; suggestion?: string }> = [];
 
         for (let i = 0; i < issues.length; i++) {
             const issue = issues[i];
@@ -1284,22 +1340,109 @@ class Flow2Runner {
             const action = await this.askUserQuestion(
                 'Co zrobić z tym issue?',
                 [
-                    'Ignoruj i kontynuuj',
-                    'Zaznacz do naprawy później',
+                    'Napraw (AI)',
+                    'Ignoruj',
                     'Przerwij proces'
                 ],
-                'Ignoruj i kontynuuj'
+                'Napraw (AI)'
             );
 
             if (action === 'Przerwij proces') {
                 throw new Error('User cancelled: Quality issue review aborted');
-            } else if (action === 'Zaznacz do naprawy później') {
-                this.log(`  → Zaznaczono do naprawy: ${issue.issue}`);
-                // TODO: Save to a TODO list or file
+            } else if (action === 'Napraw (AI)') {
+                issuesToFix.push(issue);
+                this.log(`  → Zaznaczono do naprawy przez AI`);
+            } else {
+                this.log(`  → Zignorowano`);
             }
         }
 
-        this.log('\n✓ Quality issues review completed');
+        this.log(`\n✓ Review completed: ${issuesToFix.length} issues to fix`);
+        return issuesToFix;
+    }
+
+    private async autoFixQualityIssues(
+        prdPath: string,
+        issues: Array<{ severity: string; issue: string; suggestion?: string }>
+    ): Promise<void> {
+        if (issues.length === 0) {
+            this.log('No issues to fix');
+            return;
+        }
+
+        this.log(`\n🔧 AUTO-FIXING ${issues.length} QUALITY ISSUES...`);
+
+        // Read current PRD
+        const prdContent = fs.readFileSync(prdPath, 'utf-8');
+
+        // Build fix prompt
+        const issuesList = issues.map((issue, i) =>
+            `${i + 1}. [${issue.severity.toUpperCase()}] ${issue.issue}${issue.suggestion ? `\n   Suggestion: ${issue.suggestion}` : ''}`
+        ).join('\n');
+
+        const prompt = `# PRD Quality Fix Agent
+
+You are a PRD quality improvement agent. Your task is to fix the following quality issues in the PRD document.
+
+## Issues to Fix
+${issuesList}
+
+## Current PRD Content
+\`\`\`markdown
+${prdContent}
+\`\`\`
+
+## Instructions
+1. Analyze each quality issue
+2. Make targeted improvements to the PRD to address each issue
+3. Keep changes minimal and focused - only fix what's needed
+4. Preserve the original structure and format
+5. Output the COMPLETE fixed PRD wrapped in \`\`\`markdown code fence
+
+## Output Format
+\`\`\`markdown
+[Complete fixed PRD here]
+\`\`\`
+
+Fix the PRD now:`;
+
+        // Save prompt for debugging
+        const promptFile = path.join(this.logDir, 'prd-fix-prompt.md');
+        fs.writeFileSync(promptFile, prompt);
+
+        // Execute AI fix
+        const result = await this.provider.execute(prompt, 600, 'prd-fixer');
+
+        // Save raw output for debugging
+        const outputFile = path.join(this.logDir, 'prd-fix-output.md');
+        fs.writeFileSync(outputFile, result.output);
+
+        if (!result.ok) {
+            throw new Error(`PRD fix failed: ${result.error}`);
+        }
+
+        // Extract fixed PRD (handle CRLF)
+        const mdMatch = result.output.match(/\`\`\`markdown\r?\n([\s\S]+?)\r?\n\`\`\`/);
+        if (!mdMatch) {
+            this.log('Warning: Could not extract fixed PRD from AI response', 'warn');
+            this.log('Check the output at: ' + outputFile);
+            return;
+        }
+
+        const fixedPrd = mdMatch[1];
+
+        // Backup original PRD
+        const backupPath = prdPath.replace('.md', '.backup.md');
+        fs.copyFileSync(prdPath, backupPath);
+        this.log(`  → Backup saved to: ${backupPath}`);
+
+        // Save fixed PRD
+        fs.writeFileSync(prdPath, fixedPrd);
+        this.log(`  → Fixed PRD saved to: ${prdPath}`);
+
+        this.log(`\n✅ AUTO-FIX COMPLETE`);
+        this.log(`  Fixed ${issues.length} issues`);
+        this.log(`  Original backed up to: ${backupPath}`);
     }
 
     // ========================================================================
